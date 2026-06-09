@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import os
 import re
+import time
 from typing import List, Tuple
 
 from model_collaboration.data import eval
@@ -511,6 +512,7 @@ def _simple_rank_and_fuse(
     num_models = len(model_names)
 
     # Step 2: pairwise-ranking prompts and call ranker model
+    rank_start = time.perf_counter()
     print("[LLM-Blender] Ranking candidate answers with pairwise comparisons...")
     pairwise_prompts: List[str] = []
     pairwise_metadata: List[Tuple[int, int, int]] = []
@@ -562,7 +564,11 @@ def _simple_rank_and_fuse(
         top_indices = sorted_indices[:top_k]
         all_top_indices.append(top_indices)
 
+    rank_end = time.perf_counter()
+    print(f"[LATENCY] ranking_sec={rank_end - rank_start:.3f}")
+
     # Step 3: build fusion prompts and call fuser model
+    fuse_start = time.perf_counter()
     print("[LLM-Blender] Fusing top-k candidate answers with the fuser model...")
     fuser_input_list: List[str] = []
     for example_idx in range(num_examples):
@@ -586,6 +592,8 @@ def _simple_rank_and_fuse(
         max_response_length=fuser_max_response_length,
     )
     final_outputs = fuser_outputs_nested[0]
+    fuse_end = time.perf_counter()
+    print(f"[LATENCY] fusion_sec={fuse_end - fuse_start:.3f}")
 
     return final_outputs, all_scores, all_top_indices
 
@@ -606,6 +614,8 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     script_path = Path(__file__).resolve()
     script_dir = script_path.parent.parent.parent
     os.chdir(script_dir)
+
+    total_start = time.perf_counter()
 
     os.makedirs("model_collaboration/logs", exist_ok=True)
     os.makedirs(METHOD_LOG_DIR, exist_ok=True)
@@ -649,11 +659,14 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     # Step 1: generate candidate answers from each base model
     print(f"[LLM-Blender] Generating candidate answers from {len(model_names)} base models: {model_names}")
     list_of_input_list = [test_input_list for _ in model_names]
+    gen_start = time.perf_counter()
     list_of_output_list = distributed_generation.distributed_generation(
         model_names,
         list_of_input_list,
         gpu_ids,
     )
+    gen_end = time.perf_counter()
+    print(f"[LATENCY] candidate_generation_sec={gen_end - gen_start:.3f}")
 
     num_examples = len(test_input_list)
     num_models = len(model_names)
@@ -715,6 +728,8 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     with open(log_filename, "w") as f:
         json.dump(experiment_logs, f, indent=4)
 
+    total_end = time.perf_counter()
+    print(f"[LATENCY] total_sec={total_end - total_start:.3f}")
     return 0
 
 
