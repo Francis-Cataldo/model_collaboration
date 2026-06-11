@@ -83,8 +83,6 @@ def preload_models_and_tokenizers(model_names):
         
     return models, tokenizers
 
-
-
 def _build_ranking_prompt(
     question: str,
     candidate_answers: List[str],
@@ -543,10 +541,12 @@ def _simple_rank_and_fuse(
     gpu_ids,
     model_names,
     hyperparameters,
-    test_input_list,
-    candidates_per_example: List[List[str]],
+    question,
+    candidate_answers: List[str],
     ranker_model_override: str = None,
     fuser_model_override: str = None,
+    models=None,
+    tokenizers=None
 ):
     """
     Backend 1: use causal LMs as zero-shot ranker and fuser.
@@ -579,87 +579,90 @@ def _simple_rank_and_fuse(
     print("[LLM-Blender] Using ranker model:", actual_ranker_model)
     print("[LLM-Blender] Using fuser model:", actual_fuser_model)
 
-    num_examples = len(test_input_list)
     num_models = len(model_names)
 
     # Step 2: pairwise-ranking prompts and call ranker model
     print("[LLM-Blender] Ranking candidate answers with pairwise comparisons...")
-    pairwise_prompts: List[str] = []
-    pairwise_metadata: List[Tuple[int, int, int]] = []
-    for example_idx in range(num_examples):
-        question = test_input_list[example_idx]
-        candidate_answers = candidates_per_example[example_idx]
-        n = len(candidate_answers)
-        for i in range(n):
-            for j in range(i + 1, n):
-                prompt = _build_pairwise_ranking_prompt(
-                    question=question,
-                    answer_a=candidate_answers[i],
-                    answer_b=candidate_answers[j],
-                )
-                pairwise_prompts.append(prompt)
-                pairwise_metadata.append((example_idx, i, j))
+    pairwise_prompts = []
+    pairwise_metadata: List[Tuple[int, int]] = []
+    
+        
+        
+    n = len(candidate_answers)
+    for i in range(n):
+        for j in range(i + 1, n):
+            prompt = _build_pairwise_ranking_prompt(
+                question=question,
+                answer_a=candidate_answers[i],
+                answer_b=candidate_answers[j],
+            )
+            pairwise_metadata.append((i, j))
+            pairwise_prompts.append(prompt)
 
-    all_scores: List[List[float]] = [
-        [0.0 for _ in range(num_models)] for _ in range(num_examples)
-    ]
-    if pairwise_prompts:
-        ranker_outputs_nested = distributed_generation.distributed_generation(
-            [actual_ranker_model],
-            [pairwise_prompts],
-            [ranker_gpu_id],
-            max_response_length=ranker_max_response_length,
-        )
-        ranker_outputs = ranker_outputs_nested[0]
+    all_scores = [0.0 for _ in range(num_models)]
+    
 
-        for output_text, (example_idx, i, j) in zip(
-            ranker_outputs, pairwise_metadata
-        ):
-            pref = _parse_pairwise_preference(output_text)
-            if pref == "A":
-                all_scores[example_idx][i] += 1.0
-            elif pref == "B":
-                all_scores[example_idx][j] += 1.0
-            else:
-                all_scores[example_idx][i] += 0.5
-                all_scores[example_idx][j] += 0.5
+    ranker_outputs_nested = distributed_generation.distributed_generation(
+        [actual_ranker_model],
+        [pairwise_prompts],
+        [ranker_gpu_id],
+        max_response_length=ranker_max_response_length,
+        models=models,
+        tokenizers=tokenizers
+    )
+    ranker_outputs = ranker_outputs_nested[0]
 
-    all_top_indices: List[List[int]] = []
-    for example_idx in range(num_examples):
-        sorted_indices = sorted(
-            list(range(num_models)),
-            key=lambda idx: all_scores[example_idx][idx],
-            reverse=True,
-        )
-        top_indices = sorted_indices[:top_k]
-        all_top_indices.append(top_indices)
+    # print(ranker_outputs)
+
+    for output_text, (i, j) in zip(
+        ranker_outputs, pairwise_metadata
+    ):
+        pref = _parse_pairwise_preference(output_text)
+        if pref == "A":
+            all_scores[i] += 1.0
+        elif pref == "B":
+            all_scores[j] += 1.0
+        else:
+            all_scores[i] += 0.5
+            all_scores[j] += 0.5
+
+    top_indices: List[int] = []
+    sorted_indices = sorted(
+        list(range(num_models)),
+        key=lambda idx: all_scores[idx],
+        reverse=True,
+    )
+    top_indices = sorted_indices[:top_k]
 
     # Step 3: build fusion prompts and call fuser model
     print("[LLM-Blender] Fusing top-k candidate answers with the fuser model...")
     fuser_input_list: List[str] = []
-    for example_idx in range(num_examples):
-        question = test_input_list[example_idx]
-        candidates = candidates_per_example[example_idx]
-        top_indices = all_top_indices[example_idx]
-        top_candidates: List[Tuple[int, str]] = [
-            (model_idx, candidates[model_idx]) for model_idx in top_indices
-        ]
-        fusion_prompt = _build_fusion_prompt(
-            question=question,
-            top_candidates=top_candidates,
-            model_names=model_names,
-        )
-        fuser_input_list.append(fusion_prompt)
+    candidates = candidate_answers[0]
+    top_candidates: List[Tuple[int, str]] = [
+        (model_idx, candidates) for model_idx in top_indices
+    ]
+    print(question)
+    print(top_candidates)
+    print(model_names)
+    fusion_prompt = _build_fusion_prompt(
+        question=question,
+        top_candidates=top_candidates,
+        model_names=model_names,
+    )
+    fuser_input_list.append(fusion_prompt)
 
     fuser_outputs_nested = distributed_generation.distributed_generation(
         [actual_fuser_model],
         [fuser_input_list],
         [fuser_gpu_id],
         max_response_length=fuser_max_response_length,
+        models=models,
+        tokenizers=tokenizers
     )
     final_outputs = fuser_outputs_nested[0]
+    print(final_outputs)
 
-    return final_outputs, all_scores, all_top_indices
+    return final_outputs, all_scores, top_indices
 
 # TODO: changed back to run_method without trailing underscore
 def run_method_(task, task_type, gpu_ids, model_names, hyperparameters):
@@ -800,7 +803,7 @@ if __name__ == "__main__":
     )
 
 # DEPRECATED
-def run_method______(task, task_type, gpu_ids, model_names, hyperparameters):
+def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     import os
     from pathlib import Path
     script_path = Path(__file__).resolve()
@@ -809,6 +812,8 @@ def run_method______(task, task_type, gpu_ids, model_names, hyperparameters):
 
     os.makedirs("model_collaboration/logs", exist_ok=True)
     os.makedirs(METHOD_LOG_DIR, exist_ok=True)
+
+    
 
     # Optional training on dev set
     trained_ranker_path = None
@@ -842,13 +847,45 @@ def run_method______(task, task_type, gpu_ids, model_names, hyperparameters):
                 dev_candidates,
                 dev_scores,
             )
+
+    ranker_model_override = None
+    fuser_model_override = None
+    # get fuser and ranker names to preload
+    max_response_length = hyperparameters.get("max_response_length")
+    top_k = hyperparameters.get("top_k", 3)
+    top_k = max(1, min(top_k, len(model_names)))
+
+    # Ranker: causal LM as judge
+    # Prefer override (trained on dev), otherwise use configured base.
+    base_ranker = hyperparameters.get(
+        "ranker_model_name", "Qwen/Qwen2.5-7B-Instruct"
+    )
+    actual_ranker_model = ranker_model_override or base_ranker
+    ranker_gpu_id = hyperparameters.get("ranker_gpu_id", gpu_ids[0])
+    ranker_max_response_length = hyperparameters.get(
+        "ranker_max_response_length", 128
+    )
+
+    # Fuser: causal LM as summarizer
+    base_fuser = hyperparameters.get("fuser_model_name") or (
+        model_names[0] if len(model_names) > 0 else base_ranker
+    )
+    actual_fuser_model = fuser_model_override or base_fuser
+    fuser_gpu_id = hyperparameters.get("fuser_gpu_id", gpu_ids[0])
+    fuser_max_response_length = hyperparameters.get(
+        "fuser_max_response_length", max_response_length
+    )
  
+    models, tokenizers = preload_models_and_tokenizers(model_names + [actual_ranker_model] + [actual_fuser_model])
 
     test_scores = []
     # Prepare test inputs (one by one)
-    for input_list in eval.prepare_inputs(task, task_type, "test"):
+    prepared_inputs = eval.prepare_inputs(task, task_type, "test")
+    candidates_per_example = []
+    final_outputs = []
+    for i in range(len(prepared_inputs)):
+        input_list = prepared_inputs[i]
         test_input_list = [input_list] 
-
 
         list_of_input_list = [test_input_list for _ in model_names] 
 
@@ -857,33 +894,39 @@ def run_method______(task, task_type, gpu_ids, model_names, hyperparameters):
             model_names,
             list_of_input_list,
             gpu_ids,
+            models=models,
+            tokenizers=tokenizers
         )
 
         num_examples = len(test_input_list)
         num_models = len(model_names)
 
-        # Reorganize candidates per example for convenience
-        candidates_per_example: List[List[str]] = []
-        for example_idx in range(num_examples):
-            example_candidates = []
-            for model_idx in range(num_models):
-                example_candidates.append(list_of_output_list[model_idx][example_idx])
-            candidates_per_example.append(example_candidates)
+        # # Reorganize candidates per example for convenience
+        # candidates_per_example: List[List[str]] = []
+        # for example_idx in range(num_examples):
+        #     example_candidates = []
+        #     for model_idx in range(num_models):
+        #         example_candidates.append(list_of_output_list[model_idx][example_idx])
+        #     candidates_per_example.append(example_candidates)
+        candidates_per_example.append(list_of_output_list)
 
         # Ranking and fusion
-        final_outputs, all_scores, all_top_indices = _simple_rank_and_fuse(
+        final_output, all_scores, all_top_indices = _simple_rank_and_fuse(
             task,
             task_type,
             gpu_ids,
             model_names,
             hyperparameters,
             test_input_list,
-            candidates_per_example,
+            list_of_output_list[0],
             ranker_model_override=trained_ranker_path,
             fuser_model_override=trained_fuser_path,
+            models=models,
+            tokenizers=tokenizers
         )
+        final_outputs.append(final_output[0])
 
-        test_scores.extend(eval.get_scores(task, task_type, "test", final_outputs))
+    test_scores = (eval.get_scores(task, task_type, "test", final_outputs))
         
 
     # Evaluation
@@ -922,416 +965,3 @@ def run_method______(task, task_type, gpu_ids, model_names, hyperparameters):
         json.dump(experiment_logs, f, indent=4)
 
     return 0
-
-# run method without distributed generation and preloading models
-def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
-    import os
-    from pathlib import Path
-    script_path = Path(__file__).resolve()
-    script_dir = script_path.parent.parent.parent
-    os.chdir(script_dir)
-
-    os.makedirs("model_collaboration/logs", exist_ok=True)
-    os.makedirs(METHOD_LOG_DIR, exist_ok=True)
-
-    # Optional training on dev set
-
-
-    trained_ranker_path = None
-    trained_fuser_path = None
-    if hyperparameters.get("train_ranker_on_dev", False) or hyperparameters.get(
-        "train_fuser_on_dev", False
-    ):
-        print("[LLM-Blender] Collecting dev candidates and scores for training...")
-        dev_inputs, dev_candidates, dev_scores = _collect_dev_candidates_and_scores(
-            task, task_type, gpu_ids, model_names
-        )
-        if hyperparameters.get("train_ranker_on_dev", False):
-            trained_ranker_path = _train_ranker_on_dev(
-                task,
-                task_type,
-                gpu_ids,
-                model_names,
-                hyperparameters,
-                dev_inputs,
-                dev_candidates,
-                dev_scores,
-            )
-        if hyperparameters.get("train_fuser_on_dev", False):
-            trained_fuser_path = _train_fuser_on_dev(
-                task,
-                task_type,
-                gpu_ids,
-                model_names,
-                hyperparameters,
-                dev_inputs,
-                dev_candidates,
-                dev_scores,
-            )
-        
-    # initialize ranking and fusing params
-    max_response_length = hyperparameters.get("max_response_length")
-    top_k = hyperparameters.get("top_k", 3)
-    top_k = max(1, min(top_k, len(model_names)))
-
-    # Ranker: causal LM as judge
-    # Prefer override (trained on dev), otherwise use configured base.
-    base_ranker = hyperparameters.get(
-        "ranker_model_name", "Qwen/Qwen2.5-7B-Instruct"
-    )
-
-    ranker_model_override=trained_ranker_path
-    fuser_model_override=trained_fuser_path
-    actual_ranker_model = ranker_model_override or base_ranker
-    ranker_gpu_id = hyperparameters.get("ranker_gpu_id", gpu_ids[0])
-    ranker_max_response_length = hyperparameters.get(
-        "ranker_max_response_length", 128
-    )
-
-    # Fuser: causal LM as summarizer
-    base_fuser = hyperparameters.get("fuser_model_name") or (
-        model_names[0] if len(model_names) > 0 else base_ranker
-    )
-    actual_fuser_model = fuser_model_override or base_fuser
-    fuser_gpu_id = hyperparameters.get("fuser_gpu_id", gpu_ids[0])
-    fuser_max_response_length = hyperparameters.get(
-        "fuser_max_response_length", max_response_length
-    )
-
-    
-
-
-    prepared_inputs = eval.prepare_inputs(task, task_type, "test")
-
-    num_examples = len(prepared_inputs) # number of models in pool times questions
-    num_models = len(model_names)
-
-    # only add locally!!
-    models, tokenizers = preload_models_and_tokenizers(model_names + [actual_fuser_model] + [actual_ranker_model])
-
-    final_outputs = []
-    candidates_per_example: List[List[str]] = []
-
-    all_scores: List[List[float]] = [
-        [0.0 for _ in range(num_models)] for _ in range(num_examples)
-    ]
-    
-    for example_idx in range(len(prepared_inputs)):
-        input_list = prepared_inputs[example_idx]
-
-
-        # list_of_input_list = [input_list for _ in model_names] 
-
-        
-        # # get output from pool of LLMs
-        # list_of_output_list = distributed_generation.distributed_generation(
-        #     model_names,
-        #     list_of_input_list,
-        #     gpu_ids,
-        # ) # replaced by code below!
-
-        test_input_list = []
-        for model_name in models:
-            test_input_list.append(generate_text_preload_llms(
-                model_name,
-                models,
-                tokenizers,
-                gpu_id,
-                input_list,
-                MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
-                TEMPERATURE,
-                TOP_P
-            ))
-
-        # adapted to go one model at a time
-
-
-        # make ranker prompt
-        question = input_list
-        candidate_answers = test_input_list
-        n = len(candidate_answers)
-
-        prompt = None
-        metadata = None
-        for i in range(n):
-            for j in range(i + 1, n):
-                prompt = _build_pairwise_ranking_prompt(
-                    question=question,
-                    answer_a=candidate_answers[i],
-                    answer_b=candidate_answers[j],
-                )
-                metadata = (example_idx, i, j)
-                pairwise_prompts.append(prompt)
-                pairwise_metadata.append((example_idx, i, j))
-
-        # ranker
-        if prompt:
-            # TODO: call ranker HERE
-            ranker_output_nested = generate_text_preload_llms(actual_ranker_model, models, tokenizers, gpu_id, prompt, 
-                MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,TEMPERATURE, TOP_P)
-
-
-            ranker_output = ranker_output_nested[0]
-
-            
-            example_idx, i, j = metadata
-            pref = _parse_pairwise_preference(ranker_output)
-            import numpy as np
-            print(np.array(all_scores).shape)
-            if pref == "A":
-                all_scores[example_idx][i] += 1.0
-            elif pref == "B":
-                all_scores[example_idx][j] += 1.0
-            else:
-                all_scores[example_idx][i] += 0.5
-                all_scores[example_idx][j] += 0.5
-
-        
-        # this is wrong... should be only the one indice that we are interested in
-        sorted_indices_index = sorted(
-            list(range(num_models)),
-            key=lambda idx: all_scores[example_idx][idx],
-            reverse=True,
-        )
-        top_indices = sorted_indices_index[:top_k]
-        print(top_indices)
-
-        fuser_input_list: List[str] = []
-    
-        question = input_list
-        
-
-        candidates = candidates_per_example[example_idx]
-        top_candidates: List[Tuple[int, str]] = [
-            (model_idx, candidates[model_idx]) for model_idx in top_indices
-        ]
-        print("QUESTION")
-        print(question)
-        print("TOP_CANIDATES")
-        print(top_canidates)
-        fusion_prompt = _build_fusion_prompt(
-            question=question,
-            top_candidates=top_candidates,
-            model_names=model_names,
-        )
-        fuser_input = fusion_prompt
-
-        # call fuser
-        fuser_output_nested = generate_text_preload_llms(actual_fuser_model, models, tokenizers, gpu_id, fusion_input, 
-                MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,TEMPERATURE, TOP_P)
-        final_outputs.append(fuser_outputs_nested[0])
-
-
-    print("[LLM-Blender] Evaluating fused outputs on the test set...")
-    test_scores = eval.get_scores(task, task_type, "test", final_outputs)
-    avg_test_score = sum(test_scores) / len(test_scores) if test_scores else 0.0
-    print(
-        f"[LLM-Blender] Final test {task} score with {len(model_names)} models: {avg_test_score}"
-    )
-
-    # Save logs
-    experiment_logs = {
-        "task": task,
-        "task_type": task_type,
-        "method": "text_llm_blender",
-        "model_names": model_names,
-        "hyperparameters": hyperparameters,
-        "avg_test_score": avg_test_score,
-        "logs": [],
-    }
-    for example_idx in range(num_examples):
-        log_entry = {
-            "input": test_input_list[example_idx],
-            "candidate_answers": candidates_per_example[example_idx],
-            "ranker_scores": all_scores[example_idx],
-            "top_k_model_indices": all_top_indices[example_idx],
-            "output": final_outputs[example_idx],
-            "score": test_scores[example_idx],
-        }
-        experiment_logs["logs"].append(log_entry)
-
-    os.makedirs("logs", exist_ok=True)
-    log_filename = "model_collaboration/logs/{}_{}_{}_llm_blender.json".format(
-        task, len(model_names), round(avg_test_score, 4)
-    )
-    with open(log_filename, "w") as f:
-        json.dump(experiment_logs, f, indent=4)
-
-    return 0
-
-
-def generate_text_preload_llms(model_name,
-            models,
-            tokenizers,
-            gpu_id,
-            input_list,
-            max_response_length, # if max_response_length is None else max_response_length,
-            TEMPERATURE,
-            TOP_P):
-    # if not BIG_MODEL_MODE:
-    #     model = models[model_name]
-    # else:
-    #     # ensure that gpu_id is a list
-    #     if not isinstance(gpu_id, list):
-    #         raise ValueError("In BIG_MODEL_MODE, gpu_id should be a list of GPU ids.")
-    #     # set CUDA_VISIBLE_DEVICES
-    #     gpu_id_str = ",".join([str(i) for i in gpu_id])
-    #     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id_str
-    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
-    # try:
-    #     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    #     tokenizer.pad_token = tokenizer.eos_token
-    #     tokenizer.padding_side = "left"
-    # except:
-    #     # tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", use_fast=True)
-    #     # tokenizer.pad_token = tokenizer.eos_token
-    #     # tokenizer.padding_side = "left"
-    #     raise ValueError("Tokenizer loading failed. Please check the model name. If it is a lora module, upload your tokenizer to the huggingface repo too.")
-
-    # TODO: this replaces the above code
-    model = models[model_name]
-    tokenizer = tokenizers[model_name]
-
-
-    # try to apply chat template
-    try:
-        chat_input = None
-
-        if "<begin>" in input_list:
-            question, partial_response = input_list.split("<begin>", 1)
-            chat = [
-                # {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": question},
-            ]
-            chat_input = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-            chat_input += partial_response
-            chat_inputs.append(chat_input)
-        else:
-            chat = [
-                # {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": input_list}
-            ]
-            chat_input = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-            
-    except:
-        chat_input = input_list
-    
-    print(type(chat_input))
-    print(chat_input)
-    inputs = tokenizer(chat_input, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    with torch.no_grad():
-        # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
-        # Should set the batch size to 1 in this case I think
-        if DELAY:
-            time.sleep(model_delays[model_name])
-            print("delayed with model " + str(model_name))
-
-
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=MAX_RESPONSE_LENGTH,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
-        )
-    decoded_outputs = tokenizer.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)
-    # decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-    # thinking model compatibility
-    for idx in range(len(decoded_outputs)):
-        if "</think>" in decoded_outputs[idx]:
-            decoded_outputs[idx] = decoded_outputs[idx].split("</think>")[-1].strip()
-
-    output_list = decoded_outputs
-    return output_list
-
-def simple_rank_and_fuse_preload(task: str,
-    task_type: str,
-    gpu_ids,
-    model_names,
-    models,
-    tokenizers,
-    hyperparameters,
-    test_input_list,
-    candidates_per_example: List[List[str]],
-    ranker_model_override: str = None,
-    fuser_model_override: str = None,):
-
-    print("[LLM-Blender] Ranking candidate answers with pairwise comparisons...")
-    pairwise_prompts: List[str] = []
-    pairwise_metadata: List[Tuple[int, int, int]] = []
-    for example_idx in range(num_examples):
-        question = test_input_list[example_idx]
-        candidate_answers = candidates_per_example[example_idx]
-        n = len(candidate_answers)
-        for i in range(n):
-            for j in range(i + 1, n):
-                prompt = _build_pairwise_ranking_prompt(
-                    question=question,
-                    answer_a=candidate_answers[i],
-                    answer_b=candidate_answers[j],
-                )
-                pairwise_prompts.append(prompt)
-                pairwise_metadata.append((example_idx, i, j))
-
-    all_scores: List[List[float]] = [
-        [0.0 for _ in range(num_models)] for _ in range(num_examples)
-    ]
-    if pairwise_prompts:
-        ranker_outputs_nested = distributed_generation.distributed_generation(
-            [actual_ranker_model],
-            [pairwise_prompts],
-            [ranker_gpu_id],
-            max_response_length=ranker_max_response_length,
-        )
-        ranker_outputs = ranker_outputs_nested[0]
-
-        for output_text, (example_idx, i, j) in zip(
-            ranker_outputs, pairwise_metadata
-        ):
-            pref = _parse_pairwise_preference(output_text)
-            if pref == "A":
-                all_scores[example_idx][i] += 1.0
-            elif pref == "B":
-                all_scores[example_idx][j] += 1.0
-            else:
-                all_scores[example_idx][i] += 0.5
-                all_scores[example_idx][j] += 0.5
-
-    all_top_indices: List[List[int]] = []
-    for example_idx in range(num_examples):
-        sorted_indices = sorted(
-            list(range(num_models)),
-            key=lambda idx: all_scores[example_idx][idx],
-            reverse=True,
-        )
-        top_indices = sorted_indices[:top_k]
-        all_top_indices.append(top_indices)
-
-    # Step 3: build fusion prompts and call fuser model
-    print("[LLM-Blender] Fusing top-k candidate answers with the fuser model...")
-    fuser_input_list: List[str] = []
-    for example_idx in range(num_examples):
-        question = test_input_list[example_idx]
-        candidates = candidates_per_example[example_idx]
-        top_indices = all_top_indices[example_idx]
-        top_candidates: List[Tuple[int, str]] = [
-            (model_idx, candidates[model_idx]) for model_idx in top_indices
-        ]
-        fusion_prompt = _build_fusion_prompt(
-            question=question,
-            top_candidates=top_candidates,
-            model_names=model_names,
-        )
-        fuser_input_list.append(fusion_prompt)
-
-    fuser_outputs_nested = distributed_generation.distributed_generation(
-        [actual_fuser_model],
-        [fuser_input_list],
-        [fuser_gpu_id],
-        max_response_length=fuser_max_response_length,
-    )
-    final_outputs = fuser_outputs_nested[0]
-
-    return final_outputs, all_scores, all_top_indices

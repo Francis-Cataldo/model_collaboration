@@ -13,6 +13,16 @@ TOP_P = None
 BATCH_SIZE = None
 BIG_MODEL_MODE = None
 
+# TODO delay code!
+import time
+DELAY = True
+
+list_of_model_name = ["Qwen/Qwen2.5-7B-Instruct","allenai/Llama-3.1-Tulu-3-8B-SFT","allenai/Llama-3.1-Tulu-3-8B-DPO","allenai/Llama-3.1-Tulu-3-8B",]
+model_delays = {}
+for model in list_of_model_name:
+    model_delays[model] = 0 # 4 second delay
+
+
 def update_generation_hyperparameters(max_response_length, temperature, top_p, batch_size, big_model_mode=False):
     global MAX_RESPONSE_LENGTH, TEMPERATURE, TOP_P, BATCH_SIZE, BIG_MODEL_MODE
     MAX_RESPONSE_LENGTH = max_response_length
@@ -21,10 +31,11 @@ def update_generation_hyperparameters(max_response_length, temperature, top_p, b
     BATCH_SIZE = batch_size
     BIG_MODEL_MODE = big_model_mode
 
-def batch_generate_text(model_name, gpu_id, input_list, max_response_length, temperature, top_p, batch_size):
+def batch_generate_text(model_name, gpu_id, input_list, max_response_length, temperature, top_p, batch_size, model=None, tokenizer=None):
     # Load model and tokenizer
     if not BIG_MODEL_MODE:
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=f"cuda:{gpu_id}", trust_remote_code=True)
+        if model == None:
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=f"cuda:{gpu_id}", trust_remote_code=True)
     else:
         # ensure that gpu_id is a list
         if not isinstance(gpu_id, list):
@@ -32,11 +43,13 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
         # set CUDA_VISIBLE_DEVICES
         gpu_id_str = ",".join([str(i) for i in gpu_id])
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id_str
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+        if model == None:
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "left"
+        if tokenizer == None:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
     except:
         # tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", use_fast=True)
         # tokenizer.pad_token = tokenizer.eos_token
@@ -70,6 +83,13 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
         
         inputs = tokenizer(chat_inputs, return_tensors="pt", padding=True, truncation=True).to(model.device)
         with torch.no_grad():
+            # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
+            # Should set the batch size to 1 in this case I think
+            if DELAY:
+                time.sleep(model_delays[model_name])
+                print("delayed with model " + str(model_name))
+
+
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_response_length,
@@ -93,7 +113,7 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
     _dynamo.reset_code_caches()
     return output_list
 
-def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id, max_response_length=None):
+def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id, max_response_length=None, models=None, tokenizers=None):
     """
     Generate text using multiple models in a distributed manner
     Args:
@@ -119,15 +139,28 @@ def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_i
 
             for j in range(len(list_of_gpu_id)):
                 if i + j < len(list_of_model_name):
-                    generation_args.append((
-                        list_of_model_name[i + j],
-                        list_of_gpu_id[j],
-                        list_of_input_list[i + j],
-                        MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
-                        TEMPERATURE,
-                        TOP_P,
-                        BATCH_SIZE
-                    ))
+                    if models == None:
+                        generation_args.append((
+                            list_of_model_name[i + j],
+                            list_of_gpu_id[j],
+                            list_of_input_list[i + j],
+                            MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
+                            TEMPERATURE,
+                            TOP_P,
+                            BATCH_SIZE
+                        ))
+                    else:
+                        generation_args.append((
+                            list_of_model_name[i + j],
+                            list_of_gpu_id[j],
+                            list_of_input_list[i + j],
+                            MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
+                            TEMPERATURE,
+                            TOP_P,
+                            BATCH_SIZE,
+                            models[list_of_model_name[i + j]],
+                            tokenizers[list_of_model_name[i + j]]
+                        ))
             
             pool = Pool(len(generation_args))
             output = pool.starmap(batch_generate_text, generation_args) # size len(generation_args) * any
@@ -202,6 +235,14 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
         inputs = tokenizer(chat_inputs, return_tensors="pt", padding=True, truncation=True).to(model.device)
         # generate response with logit information in each token
         with torch.no_grad():
+            # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
+            # Should set the batch size to 1 in this case I think
+            if DELAY:
+                time.sleep(model_delays[model_name])
+                print("delayed with model " + str(model_name))
+
+
+
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_response_length,
@@ -240,18 +281,46 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
 
 if __name__ == "__main__":
 
-    update_generation_hyperparameters(50, 0.7, 0.9, 4)
+    update_generation_hyperparameters(50, 0.7, 0.9, 1) # changed batch size to 1
 
     # output_list = batch_generate_text("allenai/Llama-3.1-Tulu-3-8B", 0, ["Hello, how are you?", "What is the capital of France?"] * 4)
     # print(output_list)
 
-    list_of_model_name = ["meta-llama/Llama-3.1-8B", "allenai/Llama-3.1-Tulu-3-8B-SFT", "allenai/Llama-3.1-Tulu-3-8B"]
+    list_of_model_name = ["allenai/Llama-3.1-Tulu-3-8B-SFT",
+        "allenai/Llama-3.1-Tulu-3-8B-DPO",
+        "allenai/Llama-3.1-Tulu-3-8B"] # changed models so I have access
     list_of_input_list = [
         ["Hello, how are you?", "What is the capital of France?"] * 4,
         ["Explain the theory of relativity.", "What is quantum computing?"] * 3,
         ["Describe the process of photosynthesis.", "What are black holes?"] * 2
     ]
-    list_of_gpu_id = [0,1,2]
+    list_of_gpu_id = [0] # only one GPU
+
+
+    # # initialize random delays for the different models
+    # global model_delays 
+    # model_delays = {}
+    # for model in list_of_model_name:
+    #     model_delays[model] = 4 # 4 second delay
+
+    DELAY = False
+
+    # record time of runnning
+    import time
+    start = time.time()
 
     output = distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id)
-    print(output)
+
+    print("Baseline time to run: " + str(time.time()-start))
+    # print(output)
+
+    DELAY = True
+
+    # record time of runnning
+    start = time.time()
+
+    output = distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id)
+
+    print("Delayed time to run: " + str(time.time()-start))
+    # print(output)
+
