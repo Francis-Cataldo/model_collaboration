@@ -33,6 +33,7 @@ BIG_MODEL_MODE = None
 # TODO delay code!
 import time
 DELAY = True
+number_tested = 20
 
 list_of_model_name = ["Qwen/Qwen2.5-7B-Instruct","allenai/Llama-3.1-Tulu-3-8B-SFT","allenai/Llama-3.1-Tulu-3-8B-DPO","allenai/Llama-3.1-Tulu-3-8B",]
 model_delays = {}
@@ -586,8 +587,11 @@ def _simple_rank_and_fuse(
     pairwise_prompts = []
     pairwise_metadata: List[Tuple[int, int]] = []
     
+    # print("actual ranker model: " + str(actual_ranker_model))
+    # print("actual fuser model: " + str(actual_fuser_model))
+    
         
-        
+
     n = len(candidate_answers)
     for i in range(n):
         for j in range(i + 1, n):
@@ -600,6 +604,7 @@ def _simple_rank_and_fuse(
             pairwise_prompts.append(prompt)
 
     all_scores = [0.0 for _ in range(num_models)]
+    
     
 
     ranker_outputs_nested = distributed_generation.distributed_generation(
@@ -637,15 +642,17 @@ def _simple_rank_and_fuse(
     # Step 3: build fusion prompts and call fuser model
     print("[LLM-Blender] Fusing top-k candidate answers with the fuser model...")
     fuser_input_list: List[str] = []
-    candidates = candidate_answers[0]
+    candidates = candidate_answers
     top_candidates: List[Tuple[int, str]] = [
-        (model_idx, candidates) for model_idx in top_indices
+        (model_idx, candidates[model_idx][0]) for model_idx in top_indices
     ]
-    print(question)
-    print(top_candidates)
-    print(model_names)
+    # print(question)
+    # print(top_candidates)
+    # print(model_names)
+
+
     fusion_prompt = _build_fusion_prompt(
-        question=question,
+        question=question[0],
         top_candidates=top_candidates,
         model_names=model_names,
     )
@@ -660,7 +667,7 @@ def _simple_rank_and_fuse(
         tokenizers=tokenizers
     )
     final_outputs = fuser_outputs_nested[0]
-    print(final_outputs)
+    # print(final_outputs)
 
     return final_outputs, all_scores, top_indices
 
@@ -804,8 +811,13 @@ if __name__ == "__main__":
 
 # DEPRECATED
 def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
+    import time
     import os
     from pathlib import Path
+
+    # timing code
+    start_time = time.time()
+
     script_path = Path(__file__).resolve()
     script_dir = script_path.parent.parent.parent
     os.chdir(script_dir)
@@ -881,6 +893,8 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     test_scores = []
     # Prepare test inputs (one by one)
     prepared_inputs = eval.prepare_inputs(task, task_type, "test")
+    print("Prepared inputs length: " + str(len(prepared_inputs)))
+    prepared_inputs = prepared_inputs[:number_tested]
     candidates_per_example = []
     final_outputs = []
     for i in range(len(prepared_inputs)):
@@ -901,14 +915,14 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
         num_examples = len(test_input_list)
         num_models = len(model_names)
 
-        # # Reorganize candidates per example for convenience
-        # candidates_per_example: List[List[str]] = []
-        # for example_idx in range(num_examples):
-        #     example_candidates = []
-        #     for model_idx in range(num_models):
-        #         example_candidates.append(list_of_output_list[model_idx][example_idx])
-        #     candidates_per_example.append(example_candidates)
-        candidates_per_example.append(list_of_output_list)
+        # Reorganize candidates per example for convenience
+        # FIX
+        candidates_per_example: List[List[str]] = []
+        example_candidates = []
+        for model_idx in range(num_models):
+            example_candidates.append(list_of_output_list[model_idx])
+        candidates_per_example.append(example_candidates)
+        # candidates_per_example.append(list_of_output_list)
 
         # Ranking and fusion
         final_output, all_scores, all_top_indices = _simple_rank_and_fuse(
@@ -918,9 +932,9 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
             model_names,
             hyperparameters,
             test_input_list,
-            list_of_output_list[0],
-            ranker_model_override=trained_ranker_path,
-            fuser_model_override=trained_fuser_path,
+            example_candidates,
+            ranker_model_override=None,
+            fuser_model_override=None,
             models=models,
             tokenizers=tokenizers
         )
@@ -963,5 +977,11 @@ def run_method(task, task_type, gpu_ids, model_names, hyperparameters):
     )
     with open(log_filename, "w") as f:
         json.dump(experiment_logs, f, indent=4)
+
+    import csv
+    with open('timing.csv', 'a', newline='\n') as file:
+                writer = csv.writer(file)
+                # Write a single row (Headers)
+                writer.writerow([number_tested, time.time()-start_time])
 
     return 0
