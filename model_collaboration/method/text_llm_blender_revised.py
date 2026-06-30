@@ -144,7 +144,7 @@ def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_
     start_time = time.time()
     # TODO: filter to amount desired
     outputs = []
-    for i in range(len(prepared_inputs)):
+    for i in range(1):
         print("test", flush=True)
         input_list = prepared_inputs[i]
 
