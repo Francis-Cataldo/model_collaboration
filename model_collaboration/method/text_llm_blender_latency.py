@@ -1062,5 +1062,3 @@ if __name__ == "__main__":
     raise SystemExit(
         "Run this method through main.py with a JSON config, not as a standalone script."
     )
-
-

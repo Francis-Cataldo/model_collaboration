@@ -13,6 +13,9 @@
         "max_response_length": 512,
         "temperature": 0.7,
         "top_p": 0.9,
-        "batch_size": 32
+        "batch_size": 32,
+        "top_k": 3,
+        "ranker_model_name": "Qwen/Qwen2.5-7B-Instruct",
+        "fuser_model_name": "Qwen/Qwen2.5-7B-Instruct"
     }
 }
