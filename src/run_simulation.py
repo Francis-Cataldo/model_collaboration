@@ -12,7 +12,7 @@ from multiprocessing import Pool
 from model_collaboration.method import distributed_generation
 from visualization import multiLLM_simulation
 
-def get_data():
+def run_simulation():
     torch.multiprocessing.set_start_method('spawn')
 
     torch.set_float32_matmul_precision('high')
@@ -51,11 +51,11 @@ def get_data():
             )
         else:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, num_datapoints=args.num_datapoints
+                task, task_type, gpu_ids, model_names, hyperparameters, num_datapoints=args.num_datapoints # add max_generation time
             )
         print(f"Method '{method_name}' executed successfully")
     else:
         raise AttributeError(f"The module '{module_path}' does not have a 'run_method' function.")
     
     # result is the average test score!
-    
+
