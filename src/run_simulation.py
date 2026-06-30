@@ -26,6 +26,7 @@ def run_simulation():
     parser.add_argument("-c", "--config_file", type=str, help="Path to the configuration file")
     parser.add_argument("-l", "--log_dir", default="./model_collaboration/logs/", type=str, help="Where should the log go?")
     parser.add_argument("--num_datapoints", default=None, type=int)
+    parser.add_argument("--pool_llm_time_limit", default=None, type=float) # args.pool_llm_time_limit
     args = parser.parse_args()
 
     with open(args.config_file, "r") as f:
