@@ -56,3 +56,6 @@ def get_data():
         print(f"Method '{method_name}' executed successfully")
     else:
         raise AttributeError(f"The module '{module_path}' does not have a 'run_method' function.")
+    
+    # result is the average test score!
+    

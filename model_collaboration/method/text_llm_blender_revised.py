@@ -98,7 +98,7 @@ def preload_models_and_tokenizers(model_names):
         
     return models, tokenizers
 
-def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_datapoints=None):
+def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_datapoints=None, max_generation_time=None):
     if num_datapoints != None:
         number_tested = testing_input_nums[num_datapoints]
     script_path = Path(__file__).resolve()
@@ -181,6 +181,8 @@ def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_
 
 
     # testing done here
+
+    return avg_test_score
 
 
 
