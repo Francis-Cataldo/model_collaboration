@@ -326,7 +326,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
     return best
 
-def get_total_latency_ms(t_seconds=0.0):
+def get_total_latency_ms(t_seconds=0.0, pool_llm_max_time=None, g=1):
+    if pool_llm_max_time:
+        LLM_COMPUTE_SEC = pool_llm_max_time
     """
     Return the total optimized latency in milliseconds.
 

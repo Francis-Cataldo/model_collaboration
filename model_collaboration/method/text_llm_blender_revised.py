@@ -144,11 +144,11 @@ def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_
     start_time = time.time()
     # TODO: filter to amount desired
     outputs = []
-    for i in range(1):
+    for i in range(len(prepared_inputs)):
         print("test", flush=True)
         input_list = prepared_inputs[i]
 
-        pool_reponses = get_pool_responses(input_list, pool_model_names, models, tokenizers)
+        pool_reponses = get_pool_responses(input_list, pool_model_names, models, tokenizers, max_generation_time)
 
         # for resp in pool_reponses:
         #     print(resp)
@@ -186,7 +186,7 @@ def run_method(task, task_type, gpu_ids, pool_model_names, hyperparameters, num_
 
 
 
-def get_pool_responses(question, pool_model_names, models, tokenizers):
+def get_pool_responses(question, pool_model_names, models, tokenizers, max_generation_time):
     
     responses = []
     for model_name in pool_model_names:
@@ -216,6 +216,7 @@ def get_pool_responses(question, pool_model_names, models, tokenizers):
         
         inputs = tokenizer(chat_inputs, return_tensors="pt", padding=True, truncation=True,return_token_type_ids=False).to(model.device)
         #print("Should be the same as previous print: " + str(model_name))
+        start_time_pool = time.time()
         with torch.no_grad():
             # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
             # Should set the batch size to 1 in this case I think
@@ -224,7 +225,7 @@ def get_pool_responses(question, pool_model_names, models, tokenizers):
                 pass
                 #print("delayed with model " + str(model_name))
 
-            start_time_pool = time.time()
+            
             output = model.generate(
                 **inputs,
                 max_new_tokens=MAX_RESPONSE_LENGTH,
@@ -233,14 +234,30 @@ def get_pool_responses(question, pool_model_names, models, tokenizers):
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id
             )
+            
+
+
+
             # print("model name to added to csv: " + model_name)
-            import csv
-            with open('data.csv', 'a', newline='\n') as file:
-                writer = csv.writer(file)
-                # Write a single row (Headers)
-                writer.writerow([model_name, time.time()-start_time_pool])
+            # import csv
+            # with open('data.csv', 'a', newline='\n') as file:
+            #     writer = csv.writer(file)
+            #     # Write a single row (Headers)
+            #     writer.writerow([model_name, time.time()-start_time_pool])
         # decoded_outputs = tokenizer.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)
         generated_tokens = output[:, inputs.input_ids.shape[1]:]
+
+        # take only the percentage of 
+        import math
+        total_time = time.time() - start_time_pool
+        tokens_generated_in_time = min(max_generation_time / total_time, 1) * len(generated_tokens[0])
+
+        print("tokens generated in time: " + str(tokens_generated_in_time))
+        print(f"output chopped off: {generated_tokens[0][math.ceil(tokens_generated_in_time):]}")
+
+        generated_tokens = generated_tokens[0][:math.ceil(tokens_generated_in_time)]
+
+        print(f"output submitted: {generated_tokens}")
         decoded_output = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
         # thinking model compatibility
