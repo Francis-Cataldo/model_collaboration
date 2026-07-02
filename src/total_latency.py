@@ -424,4 +424,4 @@ def main(g=1.0):
 if __name__ == "__main__":
     main(g=100)
 
-print(f"Total Latency = {get_total_latency_ms(100):.3f} ms")
+print(f"(Calling function directly) Total Latency = {get_total_latency_ms(100):.3f} ms")
