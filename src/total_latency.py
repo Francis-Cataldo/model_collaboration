@@ -349,11 +349,11 @@ def get_total_latency_ms(g=1.0, t_seconds=0.0):
     float
         Total latency in milliseconds.
     """
-
-    if g <= 0:
-        raise ValueError("g must be positive.")
-
-    user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
+    # make random user position
+    import random
+    latitude = random.uniform(-90.0, 90.0)
+    longitude = random.uniform(-180.0, 180.0)
+    user_pos = ground_user_position(latitude, longitude)
 
     pos, roles = constellation_snapshot(t_seconds)
 
