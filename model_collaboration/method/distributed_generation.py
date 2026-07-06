@@ -4,7 +4,7 @@ import random
 from tqdm import tqdm
 from torch import _dynamo
 from multiprocessing import Pool
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # global hyperparameters for generation
 MAX_RESPONSE_LENGTH = None
@@ -12,30 +12,57 @@ TEMPERATURE = None
 TOP_P = None
 BATCH_SIZE = None
 BIG_MODEL_MODE = None
+LOAD_IN_8BIT = False
 
-# TODO delay code!
-import time
-DELAY = True
+# Models to exclude from 8-bit quantization (fall back to bf16 for these)
+NO_8BIT_MODELS = {
+    "openai/gpt-oss-20b",       # trust_remote_code conflicts with bitsandbytes
+    "google/gemma-3-12b-it",    # CUDA device-side assert with 8-bit
+}
 
-list_of_model_name = ["Qwen/Qwen2.5-7B-Instruct","allenai/Llama-3.1-Tulu-3-8B-SFT","allenai/Llama-3.1-Tulu-3-8B-DPO","allenai/Llama-3.1-Tulu-3-8B",]
-model_delays = {}
-for model in list_of_model_name:
-    model_delays[model] = 0 # 4 second delay
+# Qwen3 models support enable_thinking=False in apply_chat_template
+QWEN3_MODELS = {
+    "Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B",
+    "Qwen/Qwen3-8B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B",
+}
 
+# gpt-oss-20b emits a spurious "assistantfinal" prefix before the answer due to chat template
+STRIP_ASSISTANT_FINAL_MODELS = {
+    "openai/gpt-oss-20b",
+}
 
-def update_generation_hyperparameters(max_response_length, temperature, top_p, batch_size, big_model_mode=False):
-    global MAX_RESPONSE_LENGTH, TEMPERATURE, TOP_P, BATCH_SIZE, BIG_MODEL_MODE
+def _strip_assistant_final(text: str) -> str:
+    # gpt-oss-20b appends "assistantfinal<ANSWER>" at the end; extract just the answer
+    idx = text.lower().find("assistantfinal")
+    if idx >= 0:
+        return text[idx + len("assistantfinal"):].strip()
+    return text
+
+def _load_model(model_name, device_map, load_in_8bit=False):
+    if load_in_8bit and model_name not in NO_8BIT_MODELS:
+        quant_config = BitsAndBytesConfig(load_in_8bit=True)
+        return AutoModelForCausalLM.from_pretrained(
+            model_name, quantization_config=quant_config,
+            device_map=device_map, trust_remote_code=True
+        )
+    return AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.bfloat16,
+        device_map=device_map, trust_remote_code=True
+    )
+
+def update_generation_hyperparameters(max_response_length, temperature, top_p, batch_size, big_model_mode=False, load_in_8bit=False):
+    global MAX_RESPONSE_LENGTH, TEMPERATURE, TOP_P, BATCH_SIZE, BIG_MODEL_MODE, LOAD_IN_8BIT
     MAX_RESPONSE_LENGTH = max_response_length
     TEMPERATURE = temperature
     TOP_P = top_p
     BATCH_SIZE = batch_size
     BIG_MODEL_MODE = big_model_mode
+    LOAD_IN_8BIT = load_in_8bit
 
-def batch_generate_text(model_name, gpu_id, input_list, max_response_length, temperature, top_p, batch_size, model=None, tokenizer=None):
+def batch_generate_text(model_name, gpu_id, input_list, max_response_length, temperature, top_p, batch_size):
     # Load model and tokenizer
     if not BIG_MODEL_MODE:
-        if model == None:
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=f"cuda:{gpu_id}", trust_remote_code=True)
+        model = _load_model(model_name, {"": gpu_id}, load_in_8bit=LOAD_IN_8BIT)
     else:
         # ensure that gpu_id is a list
         if not isinstance(gpu_id, list):
@@ -43,13 +70,11 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
         # set CUDA_VISIBLE_DEVICES
         gpu_id_str = ",".join([str(i) for i in gpu_id])
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id_str
-        if model == None:
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+        model = _load_model(model_name, "auto", load_in_8bit=LOAD_IN_8BIT)
     try:
-        if tokenizer == None:
-            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-            tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
     except:
         # tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", use_fast=True)
         # tokenizer.pad_token = tokenizer.eos_token
@@ -61,6 +86,9 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
         # try to apply chat template
         try:
             chat_inputs = []
+            tmpl_kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if model_name in QWEN3_MODELS:
+                tmpl_kwargs["enable_thinking"] = False
             for input in batch_inputs:
                 if "<begin>" in input:
                     question, partial_response = input.split("<begin>", 1)
@@ -68,7 +96,7 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
                         # {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": question},
                     ]
-                    chat_input = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+                    chat_input = tokenizer.apply_chat_template(chat, **tmpl_kwargs)
                     chat_input += partial_response
                     chat_inputs.append(chat_input)
                 else:
@@ -76,20 +104,13 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
                         # {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": input}
                     ]
-                    chat_input = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+                    chat_input = tokenizer.apply_chat_template(chat, **tmpl_kwargs)
                     chat_inputs.append(chat_input)
         except:
             chat_inputs = batch_inputs
-        
+
         inputs = tokenizer(chat_inputs, return_tensors="pt", padding=True, truncation=True).to(model.device)
         with torch.no_grad():
-            # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
-            # Should set the batch size to 1 in this case I think
-            if DELAY:
-                time.sleep(model_delays[model_name])
-                print("delayed with model " + str(model_name))
-
-
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_response_length,
@@ -106,6 +127,10 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
             if "</think>" in decoded_outputs[idx]:
                 decoded_outputs[idx] = decoded_outputs[idx].split("</think>")[-1].strip()
 
+        # strip spurious "assistantfinal" prefix for gpt-oss-20b
+        if model_name in STRIP_ASSISTANT_FINAL_MODELS:
+            decoded_outputs = [_strip_assistant_final(o) for o in decoded_outputs]
+
         output_list.extend(decoded_outputs)
     del model
     del tokenizer
@@ -113,7 +138,7 @@ def batch_generate_text(model_name, gpu_id, input_list, max_response_length, tem
     _dynamo.reset_code_caches()
     return output_list
 
-def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id, max_response_length=None, models=None, tokenizers=None):
+def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id, max_response_length=None):
     """
     Generate text using multiple models in a distributed manner
     Args:
@@ -139,28 +164,15 @@ def distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_i
 
             for j in range(len(list_of_gpu_id)):
                 if i + j < len(list_of_model_name):
-                    if models == None:
-                        generation_args.append((
-                            list_of_model_name[i + j],
-                            list_of_gpu_id[j],
-                            list_of_input_list[i + j],
-                            MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
-                            TEMPERATURE,
-                            TOP_P,
-                            BATCH_SIZE
-                        ))
-                    else:
-                        generation_args.append((
-                            list_of_model_name[i + j],
-                            list_of_gpu_id[j],
-                            list_of_input_list[i + j],
-                            MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
-                            TEMPERATURE,
-                            TOP_P,
-                            BATCH_SIZE,
-                            models[list_of_model_name[i + j]],
-                            tokenizers[list_of_model_name[i + j]]
-                        ))
+                    generation_args.append((
+                        list_of_model_name[i + j],
+                        list_of_gpu_id[j],
+                        list_of_input_list[i + j],
+                        MAX_RESPONSE_LENGTH if max_response_length is None else max_response_length,
+                        TEMPERATURE,
+                        TOP_P,
+                        BATCH_SIZE
+                    ))
             
             pool = Pool(len(generation_args))
             output = pool.starmap(batch_generate_text, generation_args) # size len(generation_args) * any
@@ -200,7 +212,7 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
 
     # Load model and tokenizer
     if not BIG_MODEL_MODE:
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=f"cuda:{gpu_id}", trust_remote_code=True)
+        model = _load_model(model_name, {"": gpu_id}, load_in_8bit=LOAD_IN_8BIT)
     else:
         # ensure that gpu_id is a list
         if not isinstance(gpu_id, list):
@@ -208,7 +220,7 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
         # set CUDA_VISIBLE_DEVICES
         gpu_id_str = ",".join([str(i) for i in gpu_id])
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id_str
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
+        model = _load_model(model_name, "auto", load_in_8bit=LOAD_IN_8BIT)
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         tokenizer.pad_token = tokenizer.eos_token
@@ -222,27 +234,22 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
         # try to apply chat template
         try:
             chat_inputs = []
+            tmpl_kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if model_name in QWEN3_MODELS:
+                tmpl_kwargs["enable_thinking"] = False
             for input in batch_inputs:
                 chat = [
                     # {"role": "system", "content": "You are a helpful assistant."},
                     {"role": "user", "content": input}
                 ]
-                chat_input = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+                chat_input = tokenizer.apply_chat_template(chat, **tmpl_kwargs)
                 chat_inputs.append(chat_input)
         except:
             chat_inputs = batch_inputs
-        
+
         inputs = tokenizer(chat_inputs, return_tensors="pt", padding=True, truncation=True).to(model.device)
         # generate response with logit information in each token
         with torch.no_grad():
-            # TODO: where the LLM is actually called... should invoke a delay here dependent of the LLM name
-            # Should set the batch size to 1 in this case I think
-            if DELAY:
-                time.sleep(model_delays[model_name])
-                print("delayed with model " + str(model_name))
-
-
-
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_response_length,
@@ -281,46 +288,18 @@ def batch_generate_text_with_score(model_name, gpu_id, input_list, max_response_
 
 if __name__ == "__main__":
 
-    update_generation_hyperparameters(50, 0.7, 0.9, 1) # changed batch size to 1
+    update_generation_hyperparameters(50, 0.7, 0.9, 4)
 
     # output_list = batch_generate_text("allenai/Llama-3.1-Tulu-3-8B", 0, ["Hello, how are you?", "What is the capital of France?"] * 4)
     # print(output_list)
 
-    list_of_model_name = ["allenai/Llama-3.1-Tulu-3-8B-SFT",
-        "allenai/Llama-3.1-Tulu-3-8B-DPO",
-        "allenai/Llama-3.1-Tulu-3-8B"] # changed models so I have access
+    list_of_model_name = ["meta-llama/Llama-3.1-8B", "allenai/Llama-3.1-Tulu-3-8B-SFT", "allenai/Llama-3.1-Tulu-3-8B"]
     list_of_input_list = [
         ["Hello, how are you?", "What is the capital of France?"] * 4,
         ["Explain the theory of relativity.", "What is quantum computing?"] * 3,
         ["Describe the process of photosynthesis.", "What are black holes?"] * 2
     ]
-    list_of_gpu_id = [0] # only one GPU
-
-
-    # # initialize random delays for the different models
-    # global model_delays 
-    # model_delays = {}
-    # for model in list_of_model_name:
-    #     model_delays[model] = 4 # 4 second delay
-
-    DELAY = False
-
-    # record time of runnning
-    import time
-    start = time.time()
+    list_of_gpu_id = [0,1,2]
 
     output = distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id)
-
-    print("Baseline time to run: " + str(time.time()-start))
-    # print(output)
-
-    DELAY = True
-
-    # record time of runnning
-    start = time.time()
-
-    output = distributed_generation(list_of_model_name, list_of_input_list, list_of_gpu_id)
-
-    print("Delayed time to run: " + str(time.time()-start))
-    # print(output)
-
+    print(output)
