@@ -1,5 +1,5 @@
 import numpy as np
-
+import random
 # ============================================================
 # CONFIG
 # ============================================================
@@ -27,8 +27,9 @@ L = 3                   # Number of selected LLM satellites
 
 FRACTIONAL_SLOT_OFFSET_STEP = 1.5
 
-USER_LAT_DEG = 0.0
-USER_LON_DEG = 90.0
+#random user positions
+USER_LAT_DEG = random.uniform(-70.0, 70.0)
+USER_LON_DEG = random.uniform(-180.0, 180.0)
 CONE_HALF_ANGLE_DEG = 22.5
 
 # Choose where route candidates are selected from:
@@ -350,10 +351,10 @@ def get_total_latency_ms(g=1.0, t_seconds=0.0):
         Total latency in milliseconds.
     """
     # make random user position
-    import random
+    # import random
     latitude = random.uniform(-90.0, 90.0)
     longitude = random.uniform(-180.0, 180.0)
-    user_pos = ground_user_position(latitude, longitude)
+    user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
 
     pos, roles = constellation_snapshot(t_seconds)
 
@@ -409,8 +410,9 @@ def main(g=1.0):
     if route is None:
         print("No valid route found.")
         return
-
+    
     print(f"g = {g}")
+    print(f"User pos = {user_pos}")
     print(f"Total Latency = {1000 * route['total_sec']:.3f} ms")
     print(
         "Minimum Time from user to the pool LLMs to the ranker = "
