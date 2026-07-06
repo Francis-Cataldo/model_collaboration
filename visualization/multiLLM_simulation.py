@@ -1,5 +1,6 @@
 import numpy as np
 import plotly.graph_objects as go
+import random
 
 # ============================================================
 # CONFIG
@@ -26,9 +27,12 @@ M_PER_ORBIT = 20 # Number of satellites on an orbit
 L = 3   # Number of pool LLMs
 FRACTIONAL_SLOT_OFFSET_STEP = 1.34  # Staggering
 
+# USER_LAT_DEG = 70
+# USER_LON_DEG = 0
 
-USER_LAT_DEG = 0.0
-USER_LON_DEG = 90.0
+#random position
+USER_LAT_DEG = random.uniform(-70.0, 70.0)
+USER_LON_DEG = random.uniform(-180.0, 180.0)
 CONE_HALF_ANGLE_DEG = 22.5
 
 N_FRAMES = 40

@@ -1,5 +1,5 @@
 import numpy as np
-
+import random
 # ============================================================
 # CONFIG
 # ============================================================
@@ -25,10 +25,11 @@ N_PLANES = 72
 M_PER_ORBIT = 20        # Number of satellites per orbit
 L = 3                   # Number of selected LLM satellites
 
-FRACTIONAL_SLOT_OFFSET_STEP = 1.34
+FRACTIONAL_SLOT_OFFSET_STEP = 1.5
 
-USER_LAT_DEG = 0.0
-USER_LON_DEG = 90.0
+#random user positions
+USER_LAT_DEG = random.uniform(-70.0, 70.0)
+USER_LON_DEG = random.uniform(-180.0, 180.0)
 CONE_HALF_ANGLE_DEG = 22.5
 
 # Choose where route candidates are selected from:
@@ -234,7 +235,7 @@ def route_candidate_mask(inside_cone, inside_diamond):
 # LATENCY OPTIMIZATION
 # ============================================================
 
-def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, inside_diamond):
+def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, inside_diamond, g=1.0):
     """
     Objective:
 
@@ -242,16 +243,21 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
             max_i [
                 d(user, LLM_i) / c
-                + LLM_compute_time
+                + LLM_compute_time / g
                 + d(LLM_i, ranker) / c
             ]
-            + ranker_compute_time
+            + ranker_compute_time / g
             + d(ranker, fuser) / c
-            + fuser_compute_time
+            + fuser_compute_time / g
             + d(fuser, user) / c
-
-    The LLM stage is parallel, so the LLM part uses the maximum selected LLM time.
     """
+
+    if g <= 0:
+        raise ValueError("g must be positive.")
+
+    llm_compute_sec = LLM_COMPUTE_SEC / g
+    ranker_compute_sec = RANKER_COMPUTE_SEC / g
+    fuser_compute_sec = FUSER_COMPUTE_SEC / g
 
     region = route_candidate_mask(inside_cone, inside_diamond)
 
@@ -284,7 +290,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
         llm_stage_times = (
             user_to_llm_all
-            + LLM_COMPUTE_SEC
+            + llm_compute_sec
             + llm_to_ranker_all
         )
 
@@ -301,9 +307,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
         total_for_fusers = (
             bottleneck_sec
-            + RANKER_COMPUTE_SEC
+            + ranker_compute_sec
             + ranker_to_fuser_all
-            + FUSER_COMPUTE_SEC
+            + fuser_compute_sec
             + fuser_to_user_all
         )
 
@@ -315,9 +321,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
             best = {
                 "total_sec": total_sec,
                 "llm_parallel_stage_sec": bottleneck_sec,
-                "ranker_compute_sec": RANKER_COMPUTE_SEC,
+                "ranker_compute_sec": ranker_compute_sec,
                 "ranker_to_fuser_sec": float(ranker_to_fuser_all[best_f_local]),
-                "fuser_compute_sec": FUSER_COMPUTE_SEC,
+                "fuser_compute_sec": fuser_compute_sec,
                 "fuser_to_user_sec": float(fuser_to_user_all[best_f_local]),
                 "ranker_idx": int(r_idx),
                 "fuser_idx": int(f_idx),
@@ -326,9 +332,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
     return best
 
-def get_total_latency_ms(t_seconds=0.0, pool_llm_max_time=None, g=1):
-    if pool_llm_max_time:
-        LLM_COMPUTE_SEC = pool_llm_max_time
+def get_total_latency_ms(g=1.0, t_seconds=0.0):
     """
     Return the total optimized latency in milliseconds.
 
@@ -337,21 +341,20 @@ def get_total_latency_ms(t_seconds=0.0, pool_llm_max_time=None, g=1):
     t_seconds : float
         Simulation time in seconds. Default is 0.0, the initial position.
 
+    g : float
+        Compute speedup factor. Default is 1.0.
+        All LLM, ranker, and fuser compute times are divided by g.
+
     Returns
     -------
     float
         Total latency in milliseconds.
-
-    Raises
-    ------
-    ValueError
-        If no valid route is found.
     """
     # make random user position
-    import random
+    # import random
     latitude = random.uniform(-90.0, 90.0)
     longitude = random.uniform(-180.0, 180.0)
-    user_pos = ground_user_position(latitude, longitude)
+    user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
 
     pos, roles = constellation_snapshot(t_seconds)
 
@@ -363,19 +366,22 @@ def get_total_latency_ms(t_seconds=0.0, pool_llm_max_time=None, g=1):
         pos,
         roles,
         inside_cone,
-        inside_diamond
+        inside_diamond,
+        g=g
     )
 
     if route is None:
         raise ValueError("No valid route found.")
 
     return 1000 * route["total_sec"]
-
 # ============================================================
 # MAIN
 # ============================================================
 
-def main():
+def main(g=1.0):
+    if g <= 0:
+        raise ValueError("g must be positive.")
+
     user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
 
     sat_positions, roles = constellation_snapshot(T_SNAPSHOT_SEC)
@@ -397,25 +403,27 @@ def main():
         sat_positions,
         roles,
         inside_cone,
-        inside_diamond
+        inside_diamond,
+        g=g
     )
 
     if route is None:
         print("No valid route found.")
         return
-
+    
+    print(f"g = {g}")
+    print(f"User pos = {user_pos}")
     print(f"Total Latency = {1000 * route['total_sec']:.3f} ms")
     print(
         "Minimum Time from user to the pool LLMs to the ranker = "
         f"{1000 * route['llm_parallel_stage_sec']:.3f} ms"
     )
-    print(f"Ranker = {1000 * route['ranker_compute_sec']:.3f} ms")
+    print(f"Ranker compute / g = {1000 * route['ranker_compute_sec']:.3f} ms")
     print(f"Ranker to Fuser = {1000 * route['ranker_to_fuser_sec']:.3f} ms")
-    print(f"Fuser = {1000 * route['fuser_compute_sec']:.3f} ms")
+    print(f"Fuser compute / g = {1000 * route['fuser_compute_sec']:.3f} ms")
     print(f"Fuser to User = {1000 * route['fuser_to_user_sec']:.3f} ms")
 
-
 if __name__ == "__main__":
-    main()
+    main(g=100)
 
-print(get_total_latency_ms())
+print(f"(Calling function directly) Total Latency = {get_total_latency_ms(100):.3f} ms")
