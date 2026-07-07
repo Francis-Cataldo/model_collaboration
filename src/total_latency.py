@@ -332,7 +332,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, insi
 
     return best
 
-def get_total_latency_ms(g=1.0, t_seconds=0.0):
+def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
+    if pool_llm_max_time:
+        LLM_COMPUTE_SEC = pool_llm_max_time
     """
     Return the total optimized latency in milliseconds.
 
@@ -352,7 +354,7 @@ def get_total_latency_ms(g=1.0, t_seconds=0.0):
     """
     # make random user position
     # import random
-    latitude = random.uniform(-90.0, 90.0)
+    latitude = random.uniform(-70.0, 70.0) # users not on poles
     longitude = random.uniform(-180.0, 180.0)
     user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
 
