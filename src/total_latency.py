@@ -444,7 +444,9 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0)
     }
 
 #Call this to get latency for random selection
-def get_random_total_latency_ms(g=1.0, t_seconds=0.0):
+def get_random_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
+    if pool_llm_max_time:
+        LLM_COMPUTE_SEC = pool_llm_max_time
     """
     Return the random-selection latency in milliseconds.
 
