@@ -356,7 +356,7 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
     # import random
     latitude = random.uniform(-70.0, 70.0) # users not on poles
     longitude = random.uniform(-180.0, 180.0)
-    user_pos = ground_user_position(USER_LAT_DEG, USER_LON_DEG)
+    user_pos = ground_user_position(latitude, longitude)
 
     pos, roles = constellation_snapshot(t_seconds)
 
