@@ -6,7 +6,7 @@ import random
 
 # Change process compute times below.
 # Units: seconds
-LLM_COMPUTE_SEC = 3.0
+LLM_COMPUTE_SEC = 
 RANKER_COMPUTE_SEC = 2.0
 FUSER_COMPUTE_SEC = 2.0
 
