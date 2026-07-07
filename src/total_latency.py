@@ -232,7 +232,7 @@ def route_candidate_mask(inside_cone):
 # LATENCY OPTIMIZATION
 # ============================================================
 
-def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0):
+def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC):
     """
     Objective:
 
@@ -252,9 +252,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
     if g <= 0:
         raise ValueError("g must be positive.")
 
-    llm_compute_sec = LLM_COMPUTE_SEC / g
-    ranker_compute_sec = RANKER_COMPUTE_SEC / g
-    fuser_compute_sec = FUSER_COMPUTE_SEC / g
+    llm_compute_sec = llm_time / g
+    ranker_compute_sec = ranker_time / g
+    fuser_compute_sec = fuser_time / g
 
     region = route_candidate_mask(inside_cone)
 
@@ -364,7 +364,9 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
         pos,
         roles,
         inside_cone,
-        g=g
+        g=g, llm_time = pool_llm_max_time,
+        ranker_time = RANKER_COMPUTE_SEC,
+        fuser_time = FUSER_COMPUTE_SEC
     )
 
     if route is None:
@@ -373,7 +375,7 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
     return 1000 * route["total_sec"]
 
 
-def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0):
+def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC):
     """
     Randomly select L LLMs, 1 ranker, and 1 fuser inside ROUTE_REGION.
 
@@ -392,9 +394,9 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0)
     if g <= 0:
         raise ValueError("g must be positive.")
 
-    llm_compute_sec = LLM_COMPUTE_SEC / g
-    ranker_compute_sec = RANKER_COMPUTE_SEC / g
-    fuser_compute_sec = FUSER_COMPUTE_SEC / g
+    llm_compute_sec = llm_time / g
+    ranker_compute_sec = ranker_time / g
+    fuser_compute_sec = fuser_time / g
 
     region = route_candidate_mask(inside_cone)
 
@@ -482,7 +484,8 @@ def get_random_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
         pos,
         roles,
         inside_cone,
-        g=g
+        g=g,
+        llm_time=pool_llm_max_time
     )
 
     if route is None:
@@ -559,6 +562,6 @@ def main(g=1.0):
 if __name__ == "__main__":
     main(g=100)
 
-print(get_total_latency_ms(100))
-print(get_random_total_latency_ms(100))
+print(get_total_latency_ms(g=100, pool_llm_max_time=100))
+print(get_random_total_latency_ms(g=100, pool_llm_max_time=100))
 
