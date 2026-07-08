@@ -11,8 +11,10 @@ from model_collaboration.data import eval
 from multiprocessing import Pool
 from model_collaboration.method import distributed_generation
 from visualization import multiLLM_simulation
-from src.total_latency import get_total_latency_ms
+from src.total_latency import get_total_latency_ms, get_random_total_latency_ms, ground_user_position
 import csv
+import pandas as pd
+import random
 
 def run_simulation():
     torch.multiprocessing.set_start_method('spawn')
@@ -30,6 +32,7 @@ def run_simulation():
     parser.add_argument("--num_datapoints", default=None, type=int)
     parser.add_argument("--pool_llm_time_limit", default=None, type=float) # args.pool_llm_time_limit
     parser.add_argument("--g", type=float, default=1)
+    parser.add_argument("--L", type=int, default=3)
     args = parser.parse_args()
 
     with open(args.config_file, "r") as f:
@@ -48,6 +51,27 @@ def run_simulation():
     print(f"Attempting to load module: {module_path}")
     method_module = importlib.import_module(module_path)
 
+    # want time for total system 
+    times = []
+
+    # get timing!
+    for _ in range(args.num_datapoints):
+        latitude = random.uniform(-70.0, 70.0)
+        longitude = random.uniform(-180.0, 180.0)
+        user_pos = ground_user_position(latitude, longitude)
+        
+        
+        time = get_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L)) # this is for one prompt
+        random_time = get_random_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L))
+        print(time)
+        with open("final_timing_data.csv", "a", newline="\n") as file:
+            writer = csv.writer(file)
+            writer.writerow([args.L, time, random_time])
+
+        times.append(time)
+    
+    # df.to_csv('data/dataframe_output.csv', mode="a", index=False)
+
     if hasattr(method_module, 'run_method'):
         if args.num_datapoints == None:
             result = method_module.run_method(
@@ -61,19 +85,20 @@ def run_simulation():
     else:
         raise AttributeError(f"The module '{module_path}' does not have a 'run_method' function.")
     
-    # result is the average test score!
+    # # result is the average test score!
 
-    # want time for total system 
+    
+    # # time = get_total_latency_ms(pool_llm_max_time=5, g=args.g) # this is for one prompt
 
-    time = get_total_latency_ms(pool_llm_max_time=5, g=args.g) # this is for one prompt
+    with open("final_results_data.csv", "a", newline="\n") as file:
+        writer = csv.writer(file)
+        writer.writerow([args.pool_llm_time_limit, result])
 
     return time, result
-    
+
 
     # want a csv with datapoints of system time and response quality (measured by performance on metrics)
 
 time, result = run_simulation()
 
-with open("simulation_data.csv", "w", newline="\n") as file:
-    writer = csv.writer(file)
-    writer.writerow([time, result])
+

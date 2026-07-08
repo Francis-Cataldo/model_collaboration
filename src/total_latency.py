@@ -232,7 +232,7 @@ def route_candidate_mask(inside_cone):
 # LATENCY OPTIMIZATION
 # ============================================================
 
-def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC):
+def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC, new_L = None):
     """
     Objective:
 
@@ -248,6 +248,8 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
             + fuser_compute_time / g
             + d(fuser, user) / c
     """
+    if new_L != None:
+        L = new_L
 
     if g <= 0:
         raise ValueError("g must be positive.")
@@ -329,9 +331,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
 
     return best
 
-def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
-    if pool_llm_max_time:
-        LLM_COMPUTE_SEC = pool_llm_max_time
+def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=3):
+    # if pool_llm_max_time:
+    #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
     Return the total optimized latency in milliseconds.
 
@@ -351,9 +353,10 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
     """
     # make random user position
     # import random
-    latitude = random.uniform(-70.0, 70.0)
-    longitude = random.uniform(-180.0, 180.0)
-    user_pos = ground_user_position(latitude, longitude)
+    # latitude = random.uniform(-70.0, 70.0)
+    # longitude = random.uniform(-180.0, 180.0)
+    # user_pos = ground_user_position(latitude, longitude)
+
 
     pos, roles = constellation_snapshot(t_seconds)
 
@@ -366,7 +369,8 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
         inside_cone,
         g=g, llm_time = pool_llm_max_time,
         ranker_time = RANKER_COMPUTE_SEC,
-        fuser_time = FUSER_COMPUTE_SEC
+        fuser_time = FUSER_COMPUTE_SEC,
+        new_L=new_L
     )
 
     if route is None:
@@ -375,7 +379,7 @@ def get_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
     return 1000 * route["total_sec"]
 
 
-def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC):
+def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC, new_L = None):
     """
     Randomly select L LLMs, 1 ranker, and 1 fuser inside ROUTE_REGION.
 
@@ -390,6 +394,8 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
         + fuser_compute/g
         + d(fuser, user)/c
     """
+    if new_L != None:
+        L = new_L
 
     if g <= 0:
         raise ValueError("g must be positive.")
@@ -446,9 +452,9 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
     }
 
 #Call this to get latency for random selection
-def get_random_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
-    if pool_llm_max_time:
-        LLM_COMPUTE_SEC = pool_llm_max_time
+def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=3):
+    # if pool_llm_max_time:
+    #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
     Return the random-selection latency in milliseconds.
 
@@ -466,14 +472,13 @@ def get_random_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
     float
         Total latency in milliseconds for one random route.
     """
+    L = new_L
 
     if g <= 0:
         raise ValueError("g must be positive.")
 
     #random user position
-    latitude = random.uniform(-70.0, 70.0)
-    longitude = random.uniform(-180.0, 180.0)
-    user_pos = ground_user_position(latitude, longitude)
+    
     pos, roles = constellation_snapshot(t_seconds)
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
@@ -485,7 +490,8 @@ def get_random_total_latency_ms(g=100, t_seconds=0.0, pool_llm_max_time=None):
         roles,
         inside_cone,
         g=g,
-        llm_time=pool_llm_max_time
+        llm_time=pool_llm_max_time,
+        new_L=new_L
     )
 
     if route is None:
@@ -559,9 +565,13 @@ def main(g=1.0):
     print(f"Random Ranker to Fuser = {1000 * random_route['ranker_to_fuser_sec']:.3f} ms")
     print(f"Random Fuser compute / g = {1000 * random_route['fuser_compute_sec']:.3f} ms")
     print(f"Random Fuser to User = {1000 * random_route['fuser_to_user_sec']:.3f} ms")
-if __name__ == "__main__":
-    main(g=100)
+# if __name__ == "__main__":
+#     main(g=100)
 
-print(get_total_latency_ms(g=100, pool_llm_max_time=100))
-print(get_random_total_latency_ms(g=100, pool_llm_max_time=100))
+latitude = random.uniform(-70.0, 70.0)
+longitude = random.uniform(-180.0, 180.0)
+user_pos = ground_user_position(latitude, longitude)
+
+print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=4))
+print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=4))
 
