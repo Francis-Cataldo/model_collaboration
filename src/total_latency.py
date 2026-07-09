@@ -1,5 +1,7 @@
 import numpy as np
 import random
+import networkx as nx
+import matplotlib.pyplot as plt
 # ============================================================
 # CONFIG
 # ============================================================
@@ -67,6 +69,53 @@ PLANE_PHASE_OFFSETS = np.array([
     for p in range(N_PLANES)
 ])
 
+import heapq
+from collections import defaultdict
+def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
+    """
+    An infinite generator that yields all cycles starting and ending at 'start_node'
+    in a NetworkX graph, strictly ordered by total weight.
+    
+    G: networkx.Graph or networkx.DiGraph
+    start_node: The target node to anchor cycles from
+    weight_key: The string key used for edge weights in the NetworkX graph
+    """
+    # Priority Queue stores: (total_cost, current_node, path_list)
+    pq = []
+    
+    # Step 1: Force a cycle by starting from immediate out-neighbors
+    # Works for both G.neighbors(node) and G.successors(node)
+    for neighbor in G.neighbors(start_node):
+        # Extract edge weight (defaults to 1 if no weight attribute exists)
+        edge_data = G.edges[start_node, neighbor]
+        weight = edge_data.get(weight_key, 1) 
+        
+        heapq.heappush(pq, (weight, neighbor, [start_node, neighbor]))
+        
+    pop_count = defaultdict(int)
+    cycle_count = 0
+    
+    # Step 2: Continuous Dijkstra state expansion
+    while pq:
+        cost, current, path = heapq.heappop(pq)
+        
+        # Found a valid completed cycle
+        if current == start_node:
+            cycle_count += 1
+            yield (cost, path)
+            continue
+            
+        # Optimization: Bound redundant expansions based on discovered cycles
+        if pop_count[current] > (cycle_count + 1):
+            continue
+        pop_count[current] += 1
+        
+        # Expand out-neighbors using NetworkX structural API
+        for neighbor in G.neighbors(current):
+            edge_data = G.edges[current, neighbor]
+            weight = edge_data.get(weight_key, 1)
+            
+            heapq.heappush(pq, (cost + weight, neighbor, path + [neighbor]))
 
 # ============================================================
 # GEOMETRY HELPERS
@@ -331,6 +380,115 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
 
     return best
 
+def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone, g=1.0, llm_time = LLM_COMPUTE_SEC, ranker_time = RANKER_COMPUTE_SEC, fuser_time = FUSER_COMPUTE_SEC, new_L = None):
+    """
+    Objective:
+
+        min over ranker R, fuser F, and selected L LLMs:
+
+            max_i [
+                d(user, LLM_i) / c
+                + LLM_compute_time / g
+                + d(LLM_i, ranker) / c
+            ]
+            + ranker_compute_time / g
+            + d(ranker, fuser) / c
+            + fuser_compute_time / g
+            + d(fuser, user) / c
+    """
+    if new_L != None:
+        L = new_L
+
+    if g <= 0:
+        raise ValueError("g must be positive.")
+
+    llm_compute_sec = llm_time / g
+    ranker_compute_sec = ranker_time / g
+    fuser_compute_sec = fuser_time / g
+
+    region = route_candidate_mask(inside_cone)
+
+    llm_idx = np.where((roles == "LLM") & region)[0]
+    ranker_idx = np.where((roles == "R") & region)[0]
+    fuser_idx = np.where((roles == "F") & region)[0]
+
+    if len(llm_idx) < L or len(ranker_idx) == 0 or len(fuser_idx) == 0:
+        return None
+
+    edges = []
+    cur_graph_index = 1 # user is 0 arb
+    satellite_index_to_graph_index = {}
+
+    for llm_id in llm_idx:
+        satellite_index_to_graph_index[llm_id] = cur_graph_index
+        cur_graph_index += 1
+        edges.append((0, satellite_index_to_graph_index[llm_id], pairwise_distance(sat_positions[llm_id], user_pos)/ C_LIGHT_KM_PER_SEC))
+    
+    for ranker_id in ranker_idx:
+        satellite_index_to_graph_index[ranker_id] = cur_graph_index
+        cur_graph_index += 1
+        for llm_id in llm_idx:
+            edges.append((satellite_index_to_graph_index[llm_id], satellite_index_to_graph_index[ranker_id], pairwise_distance(sat_positions[llm_id], sat_positions[ranker_id])))
+
+    for fuser_id in fuser_idx:
+        satellite_index_to_graph_index[fuser_id] = cur_graph_index
+        cur_graph_index += 1
+        for ranker_id in ranker_idx:
+            edges.append((satellite_index_to_graph_index[ranker_id], satellite_index_to_graph_index[fuser_id], pairwise_distance(sat_positions[ranker_id], sat_positions[fuser_id])))
+
+        edges.append((satellite_index_to_graph_index[fuser_id], 0, pairwise_distance(sat_positions[fuser_id], user_pos)))
+    
+    g = nx.DiGraph()
+    g.add_weighted_edges_from(edges)
+
+    fuser_ranker_pair_counts = {}
+    fuser_ranker_pair_paths = {}
+
+    sentinel = True
+    best_paths = None
+
+    path_generator = generate_nx_cycles_by_weight(g, 0)
+
+    counter = 0
+
+    while sentinel:
+        path = next(path_generator)
+        counter+=1
+        print(counter)
+        if (path[1][2], path[1][3]) in fuser_ranker_pair_counts:
+            fuser_ranker_pair_counts[(path[1][2], path[1][3])] += 1 # add one to ranker and fuser pair
+            print(fuser_ranker_pair_counts[(path[1][2], path[1][3])])
+            fuser_ranker_pair_paths[(path[1][2], path[1][3])].append(path)
+            if (fuser_ranker_pair_counts[(path[1][2], path[1][3])]) == L:
+                sentinel = False
+                best_paths = fuser_ranker_pair_paths[(path[1][2], path[1][3])]
+        else:
+            fuser_ranker_pair_counts[(path[1][2], path[1][3])] = 1
+            fuser_ranker_pair_paths[(path[1][2], path[1][3])] = [path]
+        
+
+    total_sec = llm_compute_sec + ranker_compute_sec + fuser_compute_sec + best_paths[-1][0]
+    
+    reversed_dict = {value: key for key, value in satellite_index_to_graph_index.items()}
+    reversed_dict[0] = "U"
+
+    # print("test")
+    # print([reversed_dict[i] for i in best_paths[1][1]])
+    # print("test")
+
+    print(fuser_ranker_pair_paths)
+    print(fuser_ranker_pair_counts)
+    best = {
+        "total_sec": total_sec,
+        "ranker_idx": reversed_dict[best_paths[0][1][2]],
+        "fuser_idx": reversed_dict[best_paths[0][1][3]],
+        "llm_idx": [reversed_dict[best_paths[i][1][1]] for i in range(L)]
+
+    }
+    # print(best['total_sec'])
+
+    return best
+
 def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=3):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
@@ -362,6 +520,20 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
 
+    # route = optimize_llm_blender_route_fancy(
+    #     user_pos,
+    #     pos,
+    #     roles,
+    #     inside_cone,
+    #     g=g, llm_time = pool_llm_max_time,
+    #     ranker_time = RANKER_COMPUTE_SEC,
+    #     fuser_time = FUSER_COMPUTE_SEC,
+    #     new_L=new_L
+    # )
+
+    
+    # print(1000 * route["total_sec"])
+
     route = optimize_llm_blender_route(
         user_pos,
         pos,
@@ -375,6 +547,8 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
 
     if route is None:
         raise ValueError("No valid route found.")
+    # print(route["ranker_idx"])
+    # print(route["fuser_idx"])
 
     return 1000 * route["total_sec"]
 
