@@ -48,17 +48,6 @@ C_LIGHT_KM_PER_SEC = 299792.458
 # BASIC CHECKS
 # ============================================================
 
-if M_PER_ORBIT % (L + 2) != 0:
-    raise ValueError(
-        f"M_PER_ORBIT={M_PER_ORBIT} must be divisible by L+2={L+2}. "
-        f"Change M_PER_ORBIT or L."
-    )
-
-K_BLOCKS = M_PER_ORBIT // (L + 2)
-N_LLM_PER_ORBIT = L * K_BLOCKS
-N_RANKER_PER_ORBIT = K_BLOCKS
-N_FUSER_PER_ORBIT = K_BLOCKS
-
 CENTER_PLANE_INDEX = N_PLANES // 2
 SLOT_ANGLE_RAD = 2 * np.pi / M_PER_ORBIT
 
@@ -134,37 +123,44 @@ def pairwise_distance(a, b):
 # CONSTELLATION AND ROLE ASSIGNMENT
 # ============================================================
 
-def roles_for_plane(plane_index):
+def roles_for_plane(plane_index, new_L=None):
     """
-    Dynamic role assignment for arbitrary L.
+    Role assignment for arbitrary L and fixed M_PER_ORBIT.
 
-    Each block has length L+2:
+    Repeating block length = L_value + 2:
         1 ranker
-        L LLMs
+        L_value LLMs
         1 fuser
 
-    The fuser is placed roughly in the middle of each block.
+    The fuser is placed roughly in the middle of each block using ceiling,
+    same as your original code.
+
+    If M_PER_ORBIT is not divisible by L_value + 2,
+    the pattern simply continues until all satellite slots are filled.
     """
 
-    block_len = L + 2
+    if new_L is None:
+        new_L = L
 
-    if M_PER_ORBIT % block_len != 0:
-        raise ValueError(
-            f"M_PER_ORBIT={M_PER_ORBIT} must be divisible by L+2={block_len}. "
-            f"Change M_PER_ORBIT or L."
-        )
-
-    roles = np.array(["LLM"] * M_PER_ORBIT, dtype=object)
+    block_len = new_L + 2
     fuser_offset = int(np.ceil(block_len / 2))
 
-    for start in range(0, M_PER_ORBIT, block_len):
-        roles[start] = "R"
-        roles[start + fuser_offset] = "F"
+    roles = []
 
-    return roles
+    for s in range(M_PER_ORBIT):
+        offset = s % block_len
+
+        if offset == 0:
+            roles.append("R")
+        elif offset == fuser_offset:
+            roles.append("F")
+        else:
+            roles.append("LLM")
+
+    return np.array(roles, dtype=object)
 
 
-def constellation_snapshot(t):
+def constellation_snapshot(t, new_L = None):
     inc = np.deg2rad(INCLINATION_DEG)
 
     positions = []
@@ -173,7 +169,7 @@ def constellation_snapshot(t):
     for p in range(N_PLANES):
         raan = raan_for_plane(p)
         plane_phase = PLANE_PHASE_OFFSETS[p]
-        role_tags = roles_for_plane(p)
+        role_tags = roles_for_plane(p, new_L = new_L)
 
         for s in range(M_PER_ORBIT):
             u0 = 2 * np.pi * s / M_PER_ORBIT + plane_phase
@@ -249,7 +245,9 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
             + d(fuser, user) / c
     """
     if new_L != None:
-        L = new_L
+        L_used = new_L
+    else:
+        L_used = L
 
     if g <= 0:
         raise ValueError("g must be positive.")
@@ -264,7 +262,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
     ranker_idx = np.where((roles == "R") & region)[0]
     fuser_idx = np.where((roles == "F") & region)[0]
 
-    if len(llm_idx) < L or len(ranker_idx) == 0 or len(fuser_idx) == 0:
+    if len(llm_idx) < L_used or len(ranker_idx) == 0 or len(fuser_idx) == 0:
         return None
 
     best = None
@@ -294,7 +292,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
         )
 
         order = np.argsort(llm_stage_times)
-        selected_local = order[:L]
+        selected_local = order[:L_used]
         selected_llm_idx = llm_idx[selected_local]
 
         bottleneck_sec = float(np.max(llm_stage_times[selected_local]))
@@ -331,7 +329,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
 
     return best
 
-def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=3):
+def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -358,9 +356,13 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
     # user_pos = ground_user_position(latitude, longitude)
 
 
-    pos, roles = constellation_snapshot(t_seconds)
+    pos, roles = constellation_snapshot(t_seconds, new_L)
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
+
+    # Avoid None / g
+    if pool_llm_max_time is None:
+        pool_llm_max_time = LLM_COMPUTE_SEC
 
     route = optimize_llm_blender_route(
         user_pos,
@@ -395,7 +397,9 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
         + d(fuser, user)/c
     """
     if new_L != None:
-        L = new_L
+        L_used = new_L
+    else:
+        L_used = L
 
     if g <= 0:
         raise ValueError("g must be positive.")
@@ -410,11 +414,11 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
     ranker_idx = np.where((roles == "R") & region)[0]
     fuser_idx = np.where((roles == "F") & region)[0]
 
-    if len(llm_idx) < L or len(ranker_idx) == 0 or len(fuser_idx) == 0:
+    if len(llm_idx) < L_used or len(ranker_idx) == 0 or len(fuser_idx) == 0:
         return None
 
     # Random selection inside the region.
-    selected_llm_idx = np.array(random.sample(list(llm_idx), L), dtype=int)
+    selected_llm_idx = np.array(random.sample(list(llm_idx), L_used), dtype=int)
     r_idx = int(random.choice(list(ranker_idx)))
     f_idx = int(random.choice(list(fuser_idx)))
 
@@ -452,7 +456,7 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
     }
 
 #Call this to get latency for random selection
-def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=3):
+def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -472,14 +476,16 @@ def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_tim
     float
         Total latency in milliseconds for one random route.
     """
-    L = new_L
 
     if g <= 0:
         raise ValueError("g must be positive.")
 
+    if pool_llm_max_time is None:
+        pool_llm_max_time = LLM_COMPUTE_SEC
+
     #random user position
     
-    pos, roles = constellation_snapshot(t_seconds)
+    pos, roles = constellation_snapshot(t_seconds, new_L)
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
 
@@ -572,6 +578,6 @@ latitude = random.uniform(-70.0, 70.0)
 longitude = random.uniform(-180.0, 180.0)
 user_pos = ground_user_position(latitude, longitude)
 
-print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=4))
-print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=4))
+print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=5))
+print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=5))
 
