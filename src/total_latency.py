@@ -91,6 +91,7 @@ def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
         # Found a valid completed cycle
         if current == start_node:
             cycle_count += 1
+            # print(cost)
             yield (cost, path)
             continue
             
@@ -427,15 +428,15 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
         satellite_index_to_graph_index[ranker_id] = cur_graph_index
         cur_graph_index += 1
         for llm_id in llm_idx:
-            edges.append((satellite_index_to_graph_index[llm_id], satellite_index_to_graph_index[ranker_id], pairwise_distance(sat_positions[llm_id], sat_positions[ranker_id])))
+            edges.append((satellite_index_to_graph_index[llm_id], satellite_index_to_graph_index[ranker_id], pairwise_distance(sat_positions[llm_id], sat_positions[ranker_id])/C_LIGHT_KM_PER_SEC))
 
     for fuser_id in fuser_idx:
         satellite_index_to_graph_index[fuser_id] = cur_graph_index
         cur_graph_index += 1
         for ranker_id in ranker_idx:
-            edges.append((satellite_index_to_graph_index[ranker_id], satellite_index_to_graph_index[fuser_id], pairwise_distance(sat_positions[ranker_id], sat_positions[fuser_id])))
+            edges.append((satellite_index_to_graph_index[ranker_id], satellite_index_to_graph_index[fuser_id], pairwise_distance(sat_positions[ranker_id], sat_positions[fuser_id])/C_LIGHT_KM_PER_SEC))
 
-        edges.append((satellite_index_to_graph_index[fuser_id], 0, pairwise_distance(sat_positions[fuser_id], user_pos)))
+        edges.append((satellite_index_to_graph_index[fuser_id], 0, pairwise_distance(sat_positions[fuser_id], user_pos)/C_LIGHT_KM_PER_SEC))
     
     g = nx.DiGraph()
     g.add_weighted_edges_from(edges)
@@ -453,10 +454,10 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
     while sentinel:
         path = next(path_generator)
         counter+=1
-        print(counter)
+        # print(counter)
         if (path[1][2], path[1][3]) in fuser_ranker_pair_counts:
             fuser_ranker_pair_counts[(path[1][2], path[1][3])] += 1 # add one to ranker and fuser pair
-            print(fuser_ranker_pair_counts[(path[1][2], path[1][3])])
+            # print(fuser_ranker_pair_counts[(path[1][2], path[1][3])])
             fuser_ranker_pair_paths[(path[1][2], path[1][3])].append(path)
             if (fuser_ranker_pair_counts[(path[1][2], path[1][3])]) == L:
                 sentinel = False
@@ -475,8 +476,8 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
     # print([reversed_dict[i] for i in best_paths[1][1]])
     # print("test")
 
-    print(fuser_ranker_pair_paths)
-    print(fuser_ranker_pair_counts)
+    # print(fuser_ranker_pair_paths)
+    # print(fuser_ranker_pair_counts)
     best = {
         "total_sec": total_sec,
         "ranker_idx": reversed_dict[best_paths[0][1][2]],
@@ -538,8 +539,24 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
     if pool_llm_max_time is None:
         pool_llm_max_time = LLM_COMPUTE_SEC
 
-
     route = optimize_llm_blender_route(
+        user_pos,
+        pos,
+        roles,
+        inside_cone,
+        g=g, llm_time = pool_llm_max_time,
+        ranker_time = RANKER_COMPUTE_SEC,
+        fuser_time = FUSER_COMPUTE_SEC,
+        new_L=new_L
+    )
+
+    print(route["ranker_idx"])
+    print(route["fuser_idx"])
+
+    print(1000*route["total_sec"])
+
+
+    route = optimize_llm_blender_route_fancy(
         user_pos,
         pos,
         roles,
@@ -552,8 +569,8 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
 
     if route is None:
         raise ValueError("No valid route found.")
-    # print(route["ranker_idx"])
-    # print(route["fuser_idx"])
+    print(route["ranker_idx"])
+    print(route["fuser_idx"])
 
     return 1000 * route["total_sec"]
 
@@ -755,6 +772,6 @@ latitude = random.uniform(-70.0, 70.0)
 longitude = random.uniform(-180.0, 180.0)
 user_pos = ground_user_position(latitude, longitude)
 
-print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=5))
-print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=5))
+print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3))
+print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3))
 
