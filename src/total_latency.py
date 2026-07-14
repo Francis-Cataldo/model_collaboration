@@ -27,7 +27,7 @@ N_PLANES = 72
 M_PER_ORBIT = 20        # Number of satellites per orbit
 L = 3                   # Number of selected LLM satellites
 
-FRACTIONAL_SLOT_OFFSET_STEP = 1.5
+STAGGERING_ANGLE_DEG = 1.5
 
 #random user positions. Also added inside functions
 USER_LAT_DEG = random.uniform(-70.0, 70.0)
@@ -51,12 +51,8 @@ C_LIGHT_KM_PER_SEC = 299792.458
 # ============================================================
 
 CENTER_PLANE_INDEX = N_PLANES // 2
-SLOT_ANGLE_RAD = 2 * np.pi / M_PER_ORBIT
 
-PLANE_PHASE_OFFSETS = np.array([
-    (p - CENTER_PLANE_INDEX) * FRACTIONAL_SLOT_OFFSET_STEP * SLOT_ANGLE_RAD
-    for p in range(N_PLANES)
-])
+
 
 import heapq
 from collections import defaultdict
@@ -204,7 +200,12 @@ def roles_for_plane(plane_index, new_L=None):
     return np.array(roles, dtype=object)
 
 
-def constellation_snapshot(t, new_L = None):
+def constellation_snapshot(t, new_L = None, new_alpha = None):
+    if new_alpha is None:
+        alpha_used = STAGGERING_ANGLE_DEG
+    else:
+        alpha_used = new_alpha
+    alpha_rad = np.deg2rad(alpha_used)
     inc = np.deg2rad(INCLINATION_DEG)
 
     positions = []
@@ -212,7 +213,7 @@ def constellation_snapshot(t, new_L = None):
 
     for p in range(N_PLANES):
         raan = raan_for_plane(p)
-        plane_phase = PLANE_PHASE_OFFSETS[p]
+        plane_phase = (p - CENTER_PLANE_INDEX) * alpha_rad
         role_tags = roles_for_plane(p, new_L = new_L)
 
         for s in range(M_PER_ORBIT):
@@ -487,7 +488,7 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
 
     return best
 
-def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None):
+def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -514,7 +515,7 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
     # user_pos = ground_user_position(latitude, longitude)
 
 
-    pos, roles = constellation_snapshot(t_seconds, new_L)
+    pos, roles = constellation_snapshot(t_seconds, new_L, new_alpha=new_alpha)
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
 
@@ -547,7 +548,12 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
         fuser_time = FUSER_COMPUTE_SEC,
         new_L=new_L
     )
-
+    if route is None:
+        raise ValueError(
+            "No valid optimized route found. "
+            "There may not be enough LLMs, rankers, or fusers inside the cone."
+        )
+    
     print(route["ranker_idx"])
     print(route["fuser_idx"])
     print(route["llm_indices"])
@@ -651,7 +657,7 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
     }
 
 #Call this to get latency for random selection
-def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None):
+def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -680,7 +686,7 @@ def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_tim
 
     #random user position
     
-    pos, roles = constellation_snapshot(t_seconds, new_L)
+    pos, roles = constellation_snapshot(t_seconds, new_L, new_alpha=new_alpha)
 
     inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
 
@@ -696,7 +702,8 @@ def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_tim
     )
 
     if route is None:
-        raise ValueError("No valid random route found.")
+        raise ValueError("No valid random route found."
+                         "There may not be enough LLMs, rankers, or fusers inside the cone.")
 
     return 1000 * route["total_sec"]
 # ============================================================
@@ -773,6 +780,6 @@ latitude = random.uniform(-70.0, 70.0)
 longitude = random.uniform(-180.0, 180.0)
 user_pos = ground_user_position(latitude, longitude)
 
-print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3))
-print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3))
+print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=30))
+print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=30))
 
