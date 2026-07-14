@@ -81,7 +81,6 @@ def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
         
         heapq.heappush(pq, (weight, neighbor, [start_node, neighbor]))
         
-    pop_count = defaultdict(int)
     cycle_count = 0
     
     # Step 2: Continuous Dijkstra state expansion
@@ -94,11 +93,6 @@ def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
             # print(cost)
             yield (cost, path)
             continue
-            
-        # Optimization: Bound redundant expansions based on discovered cycles
-        if pop_count[current] > (cycle_count + 1):
-            continue
-        pop_count[current] += 1
         
         # Expand out-neighbors using NetworkX structural API
         for neighbor in G.neighbors(current):
@@ -459,12 +453,16 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
             fuser_ranker_pair_counts[(path[1][2], path[1][3])] += 1 # add one to ranker and fuser pair
             # print(fuser_ranker_pair_counts[(path[1][2], path[1][3])])
             fuser_ranker_pair_paths[(path[1][2], path[1][3])].append(path)
-            if (fuser_ranker_pair_counts[(path[1][2], path[1][3])]) == L:
-                sentinel = False
-                best_paths = fuser_ranker_pair_paths[(path[1][2], path[1][3])]
+            # if (fuser_ranker_pair_counts[(path[1][2], path[1][3])]) == L:
+            #     sentinel = False
+            #     best_paths = fuser_ranker_pair_paths[(path[1][2], path[1][3])]
         else:
             fuser_ranker_pair_counts[(path[1][2], path[1][3])] = 1
             fuser_ranker_pair_paths[(path[1][2], path[1][3])] = [path]
+        
+        if (fuser_ranker_pair_counts[(path[1][2], path[1][3])]) == L:
+                sentinel = False
+                best_paths = fuser_ranker_pair_paths[(path[1][2], path[1][3])]
         
 
     total_sec = llm_compute_sec + ranker_compute_sec + fuser_compute_sec + best_paths[-1][0]
@@ -482,7 +480,7 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
         "total_sec": total_sec,
         "ranker_idx": reversed_dict[best_paths[0][1][2]],
         "fuser_idx": reversed_dict[best_paths[0][1][3]],
-        "llm_idx": [reversed_dict[best_paths[i][1][1]] for i in range(L)]
+        "llm_indices": [reversed_dict[best_paths[i][1][1]] for i in range(L)]
 
     }
     # print(best['total_sec'])
@@ -552,6 +550,7 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
 
     print(route["ranker_idx"])
     print(route["fuser_idx"])
+    print(route["llm_indices"])
 
     print(1000*route["total_sec"])
 
@@ -569,6 +568,8 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
 
     if route is None:
         raise ValueError("No valid route found.")
+    
+    print(route["llm_indices"])
     print(route["ranker_idx"])
     print(route["fuser_idx"])
 

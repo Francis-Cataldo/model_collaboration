@@ -52,34 +52,32 @@ def run_simulation():
     method_module = importlib.import_module(module_path)
 
     # want time for total system 
-    times = []
 
     # get timing!
-    for _ in range(args.num_datapoints):
-        latitude = random.uniform(-70.0, 70.0)
-        longitude = random.uniform(-180.0, 180.0)
-        user_pos = ground_user_position(latitude, longitude)
+    # for _ in range(args.num_datapoints):
+    #     latitude = random.uniform(-70.0, 70.0)
+    #     longitude = random.uniform(-180.0, 180.0)
+    #     user_pos = ground_user_position(latitude, longitude)
         
         
-        time = get_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L)) # this is for one prompt
-        random_time = get_random_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L))
-        print(time)
-        with open("final_timing_data.csv", "a", newline="\n") as file:
-            writer = csv.writer(file)
-            writer.writerow([args.L, time, random_time])
+    #     time = get_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L)) # this is for one prompt
+    #     random_time = get_random_total_latency_ms(user_pos, pool_llm_max_time=args.pool_llm_time_limit, g=args.g, new_L=int(args.L))
+    #     print(time)
+    #     with open("final_timing_data.csv", "a", newline="\n") as file:
+    #         writer = csv.writer(file)
+    #         writer.writerow([args.L, time, random_time])
 
-        times.append(time)
     
     # df.to_csv('data/dataframe_output.csv', mode="a", index=False)
 
     if hasattr(method_module, 'run_method'):
         if args.num_datapoints == None:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, max_generation_time=args.pool_llm_time_limit
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, pool_llm_time_limit=args.pool_llm_time_limit
             )
         else:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, num_datapoints=args.num_datapoints, max_generation_time=args.pool_llm_time_limit # add max_generation time
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, num_datapoints=args.num_datapoints, pool_llm_time_limit=args.pool_llm_time_limit # add max_generation time
             )
         print(f"Method '{method_name}' executed successfully")
     else:
@@ -92,13 +90,13 @@ def run_simulation():
 
     with open("final_results_data.csv", "a", newline="\n") as file:
         writer = csv.writer(file)
-        writer.writerow([args.pool_llm_time_limit, result])
+        writer.writerow([args.L, result])
 
-    return time, result
+    return None
 
 
     # want a csv with datapoints of system time and response quality (measured by performance on metrics)
 
-time, result = run_simulation()
+run_simulation()
 
 
