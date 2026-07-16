@@ -33,6 +33,7 @@ def run_simulation():
     parser.add_argument("--pool_llm_time_limit", default=None, type=float) # args.pool_llm_time_limit
     parser.add_argument("--g", type=float, default=1)
     parser.add_argument("--L", type=int, default=3)
+    parser.add_argument("--alpha", type=float, default=None)
     args = parser.parse_args()
 
     with open(args.config_file, "r") as f:
@@ -73,11 +74,11 @@ def run_simulation():
     if hasattr(method_module, 'run_method'):
         if args.num_datapoints == None:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, pool_llm_time_limit=args.pool_llm_time_limit
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha
             )
         else:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, num_datapoints=args.num_datapoints, pool_llm_time_limit=args.pool_llm_time_limit # add max_generation time
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, num_datapoints=args.num_datapoints, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha # add max_generation time
             )
         print(f"Method '{method_name}' executed successfully")
     else:

@@ -54,49 +54,95 @@ CENTER_PLANE_INDEX = N_PLANES // 2
 
 
 
+# import heapq
+# from collections import defaultdict
+# def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
+#     """
+#     An infinite generator that yields all cycles starting and ending at 'start_node'
+#     in a NetworkX graph, strictly ordered by total weight.
+    
+#     G: networkx.Graph or networkx.DiGraph
+#     start_node: The target node to anchor cycles from
+#     weight_key: The string key used for edge weights in the NetworkX graph
+#     """
+#     # Priority Queue stores: (total_cost, current_node, path_list)
+#     pq = []
+    
+#     # Step 1: Force a cycle by starting from immediate out-neighbors
+#     # Works for both G.neighbors(node) and G.successors(node)
+#     for neighbor in G.neighbors(start_node):
+#         # Extract edge weight (defaults to 1 if no weight attribute exists)
+#         edge_data = G.edges[start_node, neighbor]
+#         weight = edge_data.get(weight_key, 1) 
+        
+#         heapq.heappush(pq, (weight, neighbor, [start_node, neighbor]))
+        
+
+    
+#     # Step 2: Continuous Dijkstra state expansion
+#     while pq:
+#         cost, current, path = heapq.heappop(pq)
+        
+#         # Found a valid completed cycle
+#         if current == start_node:
+#             # print(cost)
+#             yield (cost, path)
+#             continue
+        
+#         # Expand out-neighbors using NetworkX structural API
+#         for neighbor in G.neighbors(current):
+#             edge_data = G.edges[current, neighbor]
+#             weight = edge_data.get(weight_key, 1)
+            
+#             heapq.heappush(pq, (cost + weight, neighbor, path + [neighbor]))
+
 import heapq
-from collections import defaultdict
+import itertools
+
 def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
     """
     An infinite generator that yields all cycles starting and ending at 'start_node'
     in a NetworkX graph, strictly ordered by total weight.
-    
-    G: networkx.Graph or networkx.DiGraph
-    start_node: The target node to anchor cycles from
-    weight_key: The string key used for edge weights in the NetworkX graph
     """
-    # Priority Queue stores: (total_cost, current_node, path_list)
+    # Tie-breaker prevents heapq from comparing nodes or paths when costs are equal.
+    # This avoids crashes with unorderable nodes and speeds up queue sorting.
+    
     pq = []
     
-    # Step 1: Force a cycle by starting from immediate out-neighbors
-    # Works for both G.neighbors(node) and G.successors(node)
-    for neighbor in G.neighbors(start_node):
-        # Extract edge weight (defaults to 1 if no weight attribute exists)
-        edge_data = G.edges[start_node, neighbor]
-        weight = edge_data.get(weight_key, 1) 
+    # G[start_node] is a dramatically faster way to iterate neighbors and get edge 
+    # data simultaneously compared to G.edges[u, v].
+    for neighbor, edge_data in G[start_node].items():
+        weight = edge_data.get(weight_key, 1)
         
-        heapq.heappush(pq, (weight, neighbor, [start_node, neighbor]))
+        # Path is stored as a linked list tuple: (previous_path_tuple, current_node)
+        # This makes appending O(1) instead of O(N) list copying.
+        path_linked_list = ((None, start_node), neighbor)
         
-    cycle_count = 0
-    
-    # Step 2: Continuous Dijkstra state expansion
+        heapq.heappush(pq, (weight, neighbor, path_linked_list))
+        
     while pq:
-        cost, current, path = heapq.heappop(pq)
+        cost, current, path_node = heapq.heappop(pq)
         
         # Found a valid completed cycle
         if current == start_node:
-            cycle_count += 1
-            # print(cost)
+            # Reconstruct the path from the linked list only when yielding
+            path = []
+            curr_ptr = path_node
+            while curr_ptr is not None:
+                curr_ptr, node = curr_ptr
+                path.append(node)
+            path.reverse()
+            
             yield (cost, path)
             continue
         
-        # Expand out-neighbors using NetworkX structural API
-        for neighbor in G.neighbors(current):
-            edge_data = G.edges[current, neighbor]
+        # Expand out-neighbors using the fast AdjacencyView dictionary
+        for neighbor, edge_data in G[current].items():
             weight = edge_data.get(weight_key, 1)
             
-            heapq.heappush(pq, (cost + weight, neighbor, path + [neighbor]))
-
+            # O(1) path append
+            new_path_node = (path_node, neighbor)
+            heapq.heappush(pq, (cost + weight, neighbor, new_path_node))
 # ============================================================
 # GEOMETRY HELPERS
 # ============================================================
@@ -289,6 +335,8 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
             + fuser_compute_time / g
             + d(fuser, user) / c
     """
+    import time
+   
     if new_L != None:
         L_used = new_L
     else:
@@ -311,6 +359,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
         return None
 
     best = None
+    # start_time = time.time()
 
     user_to_llm_all = pairwise_distance(
         sat_positions[llm_idx],
@@ -372,6 +421,7 @@ def optimize_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.
                 "llm_indices": selected_llm_idx.astype(int),
             }
 
+    # return time.time() - start_time
     return best
 
 
@@ -444,11 +494,11 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
 
     path_generator = generate_nx_cycles_by_weight(g, 0)
 
-    counter = 0
+    # import time
+    # start_time = time.time()
 
     while sentinel:
         path = next(path_generator)
-        counter+=1
         # print(counter)
         if (path[1][2], path[1][3]) in fuser_ranker_pair_counts:
             fuser_ranker_pair_counts[(path[1][2], path[1][3])] += 1 # add one to ranker and fuser pair
@@ -486,9 +536,10 @@ def optimize_llm_blender_route_fancy(user_pos, sat_positions, roles, inside_cone
     }
     # print(best['total_sec'])
 
+    # return time.time() - start_time
     return best
 
-def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None):
+def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None, ranker_time=RANKER_COMPUTE_SEC, fuser_time=FUSER_COMPUTE_SEC):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -544,8 +595,8 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
         roles,
         inside_cone,
         g=g, llm_time = pool_llm_max_time,
-        ranker_time = RANKER_COMPUTE_SEC,
-        fuser_time = FUSER_COMPUTE_SEC,
+        ranker_time = ranker_time,
+        fuser_time = fuser_time,
         new_L=new_L
     )
     if route is None:
@@ -554,11 +605,105 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
             "There may not be enough LLMs, rankers, or fusers inside the cone."
         )
     
-    print(route["ranker_idx"])
-    print(route["fuser_idx"])
-    print(route["llm_indices"])
+    # print(route["ranker_idx"])
+    # print(route["fuser_idx"])
+    # print(route["llm_indices"])
 
-    print(1000*route["total_sec"])
+    # print(1000*route["total_sec"])
+
+
+    # route = optimize_llm_blender_route_fancy(
+    #     user_pos,
+    #     pos,
+    #     roles,
+    #     inside_cone,
+    #     g=g, llm_time = pool_llm_max_time,
+    #     ranker_time = RANKER_COMPUTE_SEC,
+    #     fuser_time = FUSER_COMPUTE_SEC,
+    #     new_L=new_L
+    # )
+
+    if route is None:
+        raise ValueError("No valid route found.")
+    
+    # print(route["llm_indices"])
+    # print(route["ranker_idx"])
+    # print(route["fuser_idx"])
+
+    # return route
+    return 1000 * route["total_sec"]
+
+def get_total_latency_ms_fancy(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None, ranker_time=RANKER_COMPUTE_SEC, fuser_time=FUSER_COMPUTE_SEC):
+    # if pool_llm_max_time:
+    #     LLM_COMPUTE_SEC = pool_llm_max_time
+    """
+    Return the total optimized latency in milliseconds.
+
+    Parameters
+    ----------
+    t_seconds : float
+        Simulation time in seconds. Default is 0.0, the initial position.
+
+    g : float
+        Compute speedup factor. Default is 1.0.
+        All LLM, ranker, and fuser compute times are divided by g.
+
+    Returns
+    -------
+    float
+        Total latency in milliseconds.
+    """
+    # make random user position
+    # import random
+    # latitude = random.uniform(-70.0, 70.0)
+    # longitude = random.uniform(-180.0, 180.0)
+    # user_pos = ground_user_position(latitude, longitude)
+
+
+    pos, roles = constellation_snapshot(t_seconds, new_L, new_alpha=new_alpha)
+
+    inside_cone = inside_centered_cone(user_pos, pos, CONE_HALF_ANGLE_DEG)
+
+
+    # route = optimize_llm_blender_route_fancy(
+    #     user_pos,
+    #     pos,
+    #     roles,
+    #     inside_cone,
+    #     g=g, llm_time = pool_llm_max_time,
+    #     ranker_time = RANKER_COMPUTE_SEC,
+    #     fuser_time = FUSER_COMPUTE_SEC,
+    #     new_L=new_L
+    # )
+
+    
+    # print(1000 * route["total_sec"])
+
+    # Avoid None / g
+    if pool_llm_max_time is None:
+        pool_llm_max_time = LLM_COMPUTE_SEC
+
+    # route = optimize_llm_blender_route(
+    #     user_pos,
+    #     pos,
+    #     roles,
+    #     inside_cone,
+    #     g=g, llm_time = pool_llm_max_time,
+    #     ranker_time = RANKER_COMPUTE_SEC,
+    #     fuser_time = FUSER_COMPUTE_SEC,
+    #     new_L=new_L
+    # )
+    # if route is None:
+    #     raise ValueError(
+    #         "No valid optimized route found. "
+    #         "There may not be enough LLMs, rankers, or fusers inside the cone."
+    #     )
+    
+    # print(route["ranker_idx"])
+    # print(route["fuser_idx"])
+    # print(route["llm_indices"])
+
+    # print(1000*route["total_sec"])
 
 
     route = optimize_llm_blender_route_fancy(
@@ -567,18 +712,19 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
         roles,
         inside_cone,
         g=g, llm_time = pool_llm_max_time,
-        ranker_time = RANKER_COMPUTE_SEC,
-        fuser_time = FUSER_COMPUTE_SEC,
+        ranker_time = ranker_time,
+        fuser_time = fuser_time,
         new_L=new_L
     )
 
     if route is None:
         raise ValueError("No valid route found.")
     
-    print(route["llm_indices"])
-    print(route["ranker_idx"])
-    print(route["fuser_idx"])
+    # print(route["llm_indices"])
+    # print(route["ranker_idx"])
+    # print(route["fuser_idx"])
 
+    # return route
     return 1000 * route["total_sec"]
 
 
@@ -657,7 +803,7 @@ def random_llm_blender_route(user_pos, sat_positions, roles, inside_cone, g=1.0,
     }
 
 #Call this to get latency for random selection
-def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None):
+def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None, new_L=None, new_alpha=None, ranker_time=RANKER_COMPUTE_SEC, fuser_time=FUSER_COMPUTE_SEC):
     # if pool_llm_max_time:
     #     LLM_COMPUTE_SEC = pool_llm_max_time
     """
@@ -698,7 +844,9 @@ def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_tim
         inside_cone,
         g=g,
         llm_time=pool_llm_max_time,
-        new_L=new_L
+        new_L=new_L,
+        ranker_time=ranker_time,
+        fuser_time=fuser_time
     )
 
     if route is None:
@@ -780,6 +928,8 @@ latitude = random.uniform(-70.0, 70.0)
 longitude = random.uniform(-180.0, 180.0)
 user_pos = ground_user_position(latitude, longitude)
 
-print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=30))
-print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=30))
+if __name__ == "__main__":
+    print(get_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=1))
+    print(get_total_latency_ms_fancy(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=1))
+    print(get_random_total_latency_ms(user_pos, g=100, pool_llm_max_time=100, new_L=3, new_alpha=1))
 
