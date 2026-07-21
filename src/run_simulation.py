@@ -74,11 +74,11 @@ def run_simulation():
     if hasattr(method_module, 'run_method'):
         if args.num_datapoints == None:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha/5.0
             )
         else:
             result = method_module.run_method(
-                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, num_datapoints=args.num_datapoints, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha # add max_generation time
+                task, task_type, gpu_ids, model_names, hyperparameters, args.g, args.L, num_datapoints=args.num_datapoints, pool_llm_time_limit=args.pool_llm_time_limit, alpha=args.alpha/5.0 # add max_generation time
             )
         print(f"Method '{method_name}' executed successfully")
     else:
