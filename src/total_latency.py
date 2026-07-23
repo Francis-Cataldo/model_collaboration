@@ -52,8 +52,23 @@ C_LIGHT_KM_PER_SEC = 299792.458
 
 CENTER_PLANE_INDEX = N_PLANES // 2
 
+# Returned by the public get_* methods when no valid route exists.
+INVALID_TOTAL_LATENCY_MS = 3.0
 
-
+def invalid_route_result():
+    """Return a consistent dictionary for an invalid route."""
+    return {
+        "total_sec": INVALID_TOTAL_LATENCY_MS,
+        "llm_parallel_stage_sec": INVALID_TOTAL_LATENCY_MS,
+        "ranker_compute_sec": INVALID_TOTAL_LATENCY_MS,
+        "ranker_to_fuser_sec": INVALID_TOTAL_LATENCY_MS,
+        "fuser_compute_sec": INVALID_TOTAL_LATENCY_MS,
+        "fuser_to_user_sec": INVALID_TOTAL_LATENCY_MS,
+        "ranker_idx": None,
+        "fuser_idx": None,
+        "llm_indices": np.array([], dtype=int),
+        "time": INVALID_TOTAL_LATENCY_MS,
+    }
 # import heapq
 # from collections import defaultdict
 # def generate_nx_cycles_by_weight(G, start_node, weight_key='weight'):
@@ -600,10 +615,7 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
         new_L=new_L
     )
     if route is None:
-        raise ValueError(
-            "No valid optimized route found. "
-            "There may not be enough LLMs, rankers, or fusers inside the cone."
-        )
+        route = invalid_route_result()
     
     # print(route["ranker_idx"])
     # print(route["fuser_idx"])
@@ -624,8 +636,7 @@ def get_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_time=None,
     # )
 
     if route is None:
-        raise ValueError("No valid route found.")
-    
+        route = invalid_route_result()
     # print(route["llm_indices"])
     # print(route["ranker_idx"])
     # print(route["fuser_idx"])
@@ -718,7 +729,7 @@ def get_total_latency_ms_fancy(user_pos, g=100, t_seconds=0.0, pool_llm_max_time
     )
 
     if route is None:
-        raise ValueError("No valid route found.")
+        route = invalid_route_result()
     
     # print(route["llm_indices"])
     # print(route["ranker_idx"])
@@ -850,10 +861,174 @@ def get_random_total_latency_ms(user_pos, g=100, t_seconds=0.0, pool_llm_max_tim
     )
 
     if route is None:
-        raise ValueError("No valid random route found."
-                         "There may not be enough LLMs, rankers, or fusers inside the cone.")
+        route = invalid_route_result()
 
     return 1000 * route["total_sec"]
+
+
+def closest_llm_blender_route(
+    user_pos,
+    sat_positions,
+    roles,
+    inside_cone,
+    g=1.0,
+    llm_time=LLM_COMPUTE_SEC,
+    ranker_time=RANKER_COMPUTE_SEC,
+    fuser_time=FUSER_COMPUTE_SEC,
+    new_L=None,
+):
+    """
+    Greedy closest-satellite route selection.
+
+    Selection order:
+        1. Select the L LLM satellites closest to the user.
+        2. Select the ranker closest to the user.
+        3. Select the fuser closest to the user.
+
+    Only satellites inside the route candidate region are considered.
+    Returns None when there are not enough candidates.
+    """
+    L_used = L if new_L is None else new_L
+
+    if g <= 0:
+        raise ValueError("g must be positive.")
+
+    llm_compute_sec = llm_time / g
+    ranker_compute_sec = ranker_time / g
+    fuser_compute_sec = fuser_time / g
+
+    region = route_candidate_mask(inside_cone)
+
+    llm_idx = np.where((roles == "LLM") & region)[0]
+    ranker_idx = np.where((roles == "R") & region)[0]
+    fuser_idx = np.where((roles == "F") & region)[0]
+
+    if len(llm_idx) < L_used or len(ranker_idx) == 0 or len(fuser_idx) == 0:
+        return None
+
+    # 1. L closest pool LLMs to the user.
+    user_to_all_llm_dist = pairwise_distance(sat_positions[llm_idx], user_pos)
+    selected_local = np.argsort(user_to_all_llm_dist)[:L_used]
+    selected_llm_idx = llm_idx[selected_local]
+    selected_llm_pos = sat_positions[selected_llm_idx]
+
+    # 2. Ranker closest to the user.
+    user_to_all_ranker_dist = pairwise_distance(
+        sat_positions[ranker_idx],
+        user_pos,
+    )
+    best_ranker_local = int(np.argmin(user_to_all_ranker_dist))
+    r_idx = int(ranker_idx[best_ranker_local])
+    ranker_pos = sat_positions[r_idx]
+
+    # 3. Fuser closest to the user.
+    user_to_all_fuser_dist = pairwise_distance(
+        sat_positions[fuser_idx],
+        user_pos,
+    )
+    best_fuser_local = int(np.argmin(user_to_all_fuser_dist))
+    f_idx = int(fuser_idx[best_fuser_local])
+    fuser_pos = sat_positions[f_idx]
+
+    # Compute latency using the same formula as the other algorithms.
+    user_to_llm_times = (
+        pairwise_distance(selected_llm_pos, user_pos) / C_LIGHT_KM_PER_SEC
+    )
+    llm_to_ranker_times = (
+        pairwise_distance(selected_llm_pos, ranker_pos) / C_LIGHT_KM_PER_SEC
+    )
+
+    llm_stage_times = user_to_llm_times + llm_compute_sec + llm_to_ranker_times
+    llm_parallel_stage_sec = float(np.max(llm_stage_times))
+
+    ranker_to_fuser_sec = float(
+        pairwise_distance(ranker_pos, fuser_pos) / C_LIGHT_KM_PER_SEC
+    )
+    fuser_to_user_sec = float(
+        pairwise_distance(fuser_pos, user_pos) / C_LIGHT_KM_PER_SEC
+    )
+
+    total_sec = (
+        llm_parallel_stage_sec
+        + ranker_compute_sec
+        + ranker_to_fuser_sec
+        + fuser_compute_sec
+        + fuser_to_user_sec
+    )
+
+    return {
+        "total_sec": float(total_sec),
+        "llm_parallel_stage_sec": llm_parallel_stage_sec,
+        "ranker_compute_sec": ranker_compute_sec,
+        "ranker_to_fuser_sec": ranker_to_fuser_sec,
+        "fuser_compute_sec": fuser_compute_sec,
+        "fuser_to_user_sec": fuser_to_user_sec,
+        "ranker_idx": r_idx,
+        "fuser_idx": f_idx,
+        "llm_indices": selected_llm_idx.astype(int),
+    }
+
+
+def get_total_latency_ms_closest(
+    user_pos,
+    g=100,
+    t_seconds=0.0,
+    pool_llm_max_time=None,
+    new_L=None,
+    new_alpha=None,
+    ranker_time=RANKER_COMPUTE_SEC,
+    fuser_time=FUSER_COMPUTE_SEC,
+):
+    """
+    Return the route selected by the closest-satellite algorithm.
+
+    This has the same arguments and route-dictionary format as
+    get_total_latency_ms and get_total_latency_ms_fancy.
+
+    Returns
+    -------
+    dict
+        Route dictionary. For an invalid route, all latency fields and
+        the runtime field ``time`` are -1.
+    """
+    if g <= 0:
+        raise ValueError("g must be positive.")
+
+    if pool_llm_max_time is None:
+        pool_llm_max_time = LLM_COMPUTE_SEC
+
+    pos, roles = constellation_snapshot(
+        t_seconds,
+        new_L,
+        new_alpha=new_alpha,
+    )
+    inside_cone = inside_centered_cone(
+        user_pos,
+        pos,
+        CONE_HALF_ANGLE_DEG,
+    )
+
+    import time
+    start_time = time.time()
+
+    route = closest_llm_blender_route(
+        user_pos,
+        pos,
+        roles,
+        inside_cone,
+        g=g,
+        llm_time=pool_llm_max_time,
+        ranker_time=ranker_time,
+        fuser_time=fuser_time,
+        new_L=new_L,
+    )
+
+    if route is None:
+        route = invalid_route_result()
+
+    return 1000 * route["total_sec"]
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -882,8 +1057,7 @@ def main(g=1.0):
     )
 
     if route is None:
-        print("No valid route found.")
-        return
+        route = invalid_route_result()
     
     print(f"g = {g}")
     # print(f"User pos = {user_pos}")
